@@ -1,230 +1,179 @@
-import express from "express";
-import cors from "cors";
-import dotenv from "dotenv";
-dotenv.config();
-
-import { expressjwt } from "express-jwt";
-import jwksRsa from "jwks-rsa";
-
-import staffRouter from "./staff.js";
-import teamsRouter from "./teams.js";
-import projectsRouter from "./projects.js";
-import tasksRouter from "./tasks.js";
-import reportsRouter from "./reports.js";
-import talentsRouter from "./talents.js";
-import pool from "./db.js";
+import React, { useEffect, useState } from "react";
+import { Layout, Menu, Spin, Typography, Button } from "antd";
 import {
-  attachStaffUser,
-  requireAnyRole,
-  requireRoleAtLeast,
-  loadTeamContext,
-} from "./auth.js";
+  PieChartOutlined,
+  ProjectOutlined,
+  ApartmentOutlined,
+  SettingOutlined,
+  TeamOutlined,
+} from "@ant-design/icons";
+import { useAuth0 } from "@auth0/auth0-react";
+import { createApi } from "./api";
+import type { StaffUser } from "./types";
 
-// 👇 NEW: YouTube helpers
-import {
-  getAuthUrl,
-  handleOAuthCallback,
-  syncChannelDailyStats,
-} from "./youtube.js";
+import ReportsDashboard from "./components/ReportsDashboard";
+import TeamManagement from "./components/TeamManagement";
+import AdminUsers from "./components/AdminUsers";
+import ProjectBoard from "./components/ProjectBoard";
+import TalentCenter from "./components/TalentCenter";
 
-const app = express();
-app.use(cors());
-app.use(express.json());
+const { Header, Sider, Content } = Layout;
+const { Title } = Typography;
 
-const requireAuth = expressjwt({
-  secret: jwksRsa.expressJwtSecret({
-    jwksUri: `https://${process.env.AUTH0_DOMAIN}/.well-known/jwks.json`,
-    cache: true,
-    rateLimit: true,
-  }),
-  algorithms: ["RS256"],
-  audience: process.env.AUTH0_AUDIENCE,
-  issuer: `https://${process.env.AUTH0_DOMAIN}/`,
-});
+const roleRank = ["viewer", "editor", "channel_manager", "team_lead", "director", "admin"];
 
-app.get("/", (req, res) => {
-  res.send("MCN backend OK");
-});
+const App: React.FC = () => {
+  const { isAuthenticated, isLoading, loginWithRedirect, logout, getAccessTokenSilently, user } =
+    useAuth0();
+  const [collapsed, setCollapsed] = useState(false);
+  const [activeMenu, setActiveMenu] = useState<string>("reports");
+  const [currentUser, setCurrentUser] = useState<StaffUser | null>(null);
+  const [loadingUser, setLoadingUser] = useState(false);
 
-app.get("/api/me", requireAuth, attachStaffUser, (req, res) => {
-  res.json({ user: req.staffUser });
-});
+  const hasRoleAtLeast = (minRole: string) => {
+    if (!currentUser) return false;
+    const u = roleRank.indexOf(currentUser.role);
+    const m = roleRank.indexOf(minRole);
+    return u >= 0 && m >= 0 && u >= m;
+  };
 
-app.use(
-  "/api/staff",
-  requireAuth,
-  attachStaffUser,
-  requireAnyRole(["admin", "director"]),
-  staffRouter
-);
+  const menuConfig = [
+    { key: "reports", label: "Reports / Company", icon: <PieChartOutlined />, minRole: "viewer" },
+    { key: "projects", label: "Production / Projects", icon: <ProjectOutlined />, minRole: "editor" },
+    { key: "teams", label: "Team & Nhân sự", icon: <ApartmentOutlined />, minRole: "team_lead" },
+    { key: "talents", label: "Talent / Network", icon: <TeamOutlined />, minRole: "director" },
+    { key: "admin-users", label: "Admin / Users", icon: <SettingOutlined />, minRole: "admin" },
+  ];
 
-app.use(
-  "/api/teams",
-  requireAuth,
-  attachStaffUser,
-  requireAnyRole(["admin", "director", "team_lead"]),
-  loadTeamContext,
-  teamsRouter
-);
+  const allowedMenuItems = menuConfig
+    .filter((item) => hasRoleAtLeast(item.minRole))
+    .map((item) => ({
+      key: item.key,
+      label: item.label,
+      icon: item.icon,
+    }));
 
-app.use(
-  "/api/projects",
-  requireAuth,
-  attachStaffUser,
-  requireRoleAtLeast("editor"),
-  loadTeamContext,
-  projectsRouter
-);
+  const canView = (key: string) => {
+    const cfg = menuConfig.find((m) => m.key === key);
+    if (!cfg) return false;
+    return hasRoleAtLeast(cfg.minRole);
+  };
 
-app.use(
-  "/api/tasks",
-  requireAuth,
-  attachStaffUser,
-  requireRoleAtLeast("editor"),
-  loadTeamContext,
-  tasksRouter
-);
-
-app.use(
-  "/api/talents",
-  requireAuth,
-  attachStaffUser,
-  requireAnyRole(["admin", "director"]),
-  talentsRouter
-);
-
-app.use(
-  "/api/reports",
-  requireAuth,
-  attachStaffUser,
-  requireRoleAtLeast("viewer"),
-  loadTeamContext,
-  reportsRouter
-);
-
-// 🔎 Audit logs API giữ nguyên
-app.get(
-  "/api/audit-logs",
-  requireAuth,
-  attachStaffUser,
-  requireAnyRole(["admin"]),
-  async (req, res) => {
-    try {
-      const { entityType, entityId, limit = 50 } = req.query;
-      const values = [];
-      const where = [];
-      if (entityType) {
-        values.push(entityType);
-        where.push(`entity_type = $${values.length}`);
+  useEffect(() => {
+    const loadMe = async () => {
+      if (!isAuthenticated) {
+        setCurrentUser(null);
+        setLoadingUser(false);
+        return;
       }
-      if (entityId) {
-        values.push(Number(entityId));
-        where.push(`entity_id = $${values.length}`);
-      }
-      const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-      const { rows } = await pool.query(
-        `
-        SELECT a.*, s.name AS actor_name, s.email AS actor_email
-        FROM audit_logs a
-        LEFT JOIN staff_users s ON s.id = a.actor_user_id
-        ${whereSql}
-        ORDER BY a.created_at DESC
-        LIMIT $${values.length + 1}
-        `,
-        [...values, Number(limit)]
-      );
-      res.json({ data: rows });
-    } catch (err) {
-      console.error("GET /api/audit-logs error", err);
-      res
-        .status(500)
-        .json({ error: { code: "INTERNAL_ERROR", message: "Server error" } });
-    }
-  }
-);
-
-// ===============================
-//  YOUTUBE AUTH & SYNC ENDPOINTS
-// ===============================
-
-// Lấy URL để admin bấm "Kết nối YouTube"
-app.get(
-  "/api/youtube/auth-url",
-  requireAuth,
-  attachStaffUser,
-  requireRoleAtLeast("admin"),
-  (req, res) => {
-    try {
-      const url = getAuthUrl(req.staffUser.id);
-      res.json({ url });
-    } catch (err) {
-      console.error("GET /api/youtube/auth-url error", err);
-      res
-        .status(500)
-        .json({ error: { code: "INTERNAL_ERROR", message: "Server error" } });
-    }
-  }
-);
-
-// Callback từ Google OAuth2 (không cần Auth0 middleware)
-app.get("/api/youtube/oauth2/callback", async (req, res) => {
-  try {
-    const { code, state } = req.query;
-    if (!code) {
-      return res
-        .status(400)
-        .send("Missing code from Google OAuth2 callback.");
-    }
-
-    // state chứa userId đã gắn khi tạo auth-url (fallback = 1)
-    const userId = state ? Number(state) : 1;
-
-    await handleOAuthCallback(code.toString(), userId);
-    res.send(
-      "YouTube connected successfully. You can close this window and return to the dashboard."
-    );
-  } catch (err) {
-    console.error("GET /api/youtube/oauth2/callback error", err);
-    res.status(500).send("Error connecting YouTube.");
-  }
-});
-
-// API để sync 1 channel trong khoảng ngày
-app.post(
-  "/api/youtube/sync-channel",
-  requireAuth,
-  attachStaffUser,
-  requireRoleAtLeast("admin"),
-  async (req, res) => {
-    try {
-      const { channelId, startDate, endDate } = req.body;
-      if (!channelId || !startDate || !endDate) {
-        return res.status(400).json({
-          error: {
-            code: "BAD_REQUEST",
-            message: "channelId, startDate, endDate are required",
+      try {
+        setLoadingUser(true);
+        const token = await getAccessTokenSilently({
+          authorizationParams: {
+            audience: import.meta.env.VITE_AUTH0_AUDIENCE,
           },
         });
+        const api = createApi(token);
+        const me = await api.getCurrentUser();
+        setCurrentUser(me);
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setLoadingUser(false);
       }
+    };
+    loadMe();
+  }, [isAuthenticated, getAccessTokenSilently]);
 
-      const rows = await syncChannelDailyStats(
-        req.staffUser.id,
-        channelId,
-        startDate,
-        endDate
-      );
-
-      res.json({ ok: true, rows });
-    } catch (err) {
-      console.error("POST /api/youtube/sync-channel error", err);
-      res
-        .status(500)
-        .json({ error: { code: "INTERNAL_ERROR", message: "Server error" } });
-    }
+  if (isLoading || loadingUser) {
+    return (
+      <Layout style={{ minHeight: "100vh" }}>
+        <Spin style={{ margin: "auto" }} />
+      </Layout>
+    );
   }
-);
 
-const port = process.env.PORT || 3001;
-app.listen(port, () => {
-  console.log("Server running on port", port);
-});
+  if (!isAuthenticated) {
+    return (
+      <Layout style={{ minHeight: "100vh" }}>
+        <Content style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ textAlign: "center" }}>
+            <Title level={3}>MCN Dashboard</Title>
+            <Button type="primary" onClick={() => loginWithRedirect()}>
+              Đăng nhập
+            </Button>
+          </div>
+        </Content>
+      </Layout>
+    );
+  }
+
+  return (
+    <Layout style={{ minHeight: "100vh" }}>
+      <Sider collapsible collapsed={collapsed} onCollapse={(v) => setCollapsed(v)}>
+        <div
+          style={{
+            height: 48,
+            margin: 8,
+            background: "rgba(255,255,255,0.1)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "#fff",
+          }}
+        >
+          {collapsed ? "MCN" : "MCN Dashboard"}
+        </div>
+        <Menu
+          theme="dark"
+          mode="inline"
+          selectedKeys={[activeMenu]}
+          items={allowedMenuItems}
+          onClick={({ key }) => setActiveMenu(key as string)}
+        />
+      </Sider>
+      <Layout>
+        <Header
+          style={{
+            background: "#fff",
+            padding: "0 16px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <Title level={4} style={{ margin: 0 }}>
+            {menuConfig.find((m) => m.key === activeMenu)?.label || "MCN Dashboard"}
+          </Title>
+          <div>
+            <span style={{ marginRight: 16 }}>
+              {currentUser?.name || user?.name} ({currentUser?.role})
+            </span>
+            <Button
+              size="small"
+              onClick={() => logout({ logoutParams: { returnTo: window.location.origin } })}
+            >
+              Đăng xuất
+            </Button>
+          </div>
+        </Header>
+        <Content style={{ padding: 16 }}>
+          {activeMenu === "reports" && canView("reports") && <ReportsDashboard />}
+          {activeMenu === "projects" && canView("projects") && <ProjectBoard />}
+          {activeMenu === "teams" && canView("teams") && <TeamManagement />}
+          {activeMenu === "talents" && canView("talents") && <TalentCenter />}
+          {activeMenu === "admin-users" && canView("admin-users") && <AdminUsers />}
+
+          {!canView(activeMenu) && (
+            <div style={{ padding: 24 }}>
+              <Title level={4}>Không có quyền truy cập</Title>
+              <p>Liên hệ admin để được cấp quyền phù hợp.</p>
+            </div>
+          )}
+        </Content>
+      </Layout>
+    </Layout>
+  );
+};
+
+export default App;
