@@ -2,7 +2,7 @@ import pool from "./db.js";
 
 export async function attachStaffUser(req, res, next) {
   try {
-    // FIX: express-jwt v8 gán payload trực tiếp vào req.auth
+    // express-jwt v8 puts the JWT payload directly on req.auth
     const payload = req.auth;
     if (!payload) {
       return res
@@ -10,9 +10,11 @@ export async function attachStaffUser(req, res, next) {
         .json({ error: { code: "UNAUTHENTICATED", message: "No auth payload" } });
     }
 
+    const ns = "https://api2.thesun.media";
+
     const sub = payload.sub;
-    const email = payload.email;
-    const name = payload.name || email;
+    const email = payload[ns + "/email"] || payload.email;
+    const name = payload[ns + "/name"] || payload.name || email;
 
     if (!email) {
       return res
