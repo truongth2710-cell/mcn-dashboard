@@ -16,6 +16,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
       authorizationParams={{
         redirect_uri: window.location.origin,
         audience,
+        scope: "openid profile email"  // yêu cầu thêm email vào token
       }}
       cacheLocation="localstorage"
     >
