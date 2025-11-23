@@ -2,9 +2,12 @@ import pool from "./db.js";
 
 export async function attachStaffUser(req, res, next) {
   try {
-    const payload = req.auth?.payload;
+    // FIX: express-jwt v8 gán payload trực tiếp vào req.auth
+    const payload = req.auth;
     if (!payload) {
-      return res.status(401).json({ error: { code: "UNAUTHENTICATED", message: "No auth payload" } });
+      return res
+        .status(401)
+        .json({ error: { code: "UNAUTHENTICATED", message: "No auth payload" } });
     }
 
     const sub = payload.sub;
@@ -12,7 +15,9 @@ export async function attachStaffUser(req, res, next) {
     const name = payload.name || email;
 
     if (!email) {
-      return res.status(400).json({ error: { code: "NO_EMAIL", message: "Token has no email" } });
+      return res
+        .status(400)
+        .json({ error: { code: "NO_EMAIL", message: "Token has no email" } });
     }
 
     let user;
@@ -45,7 +50,9 @@ export async function attachStaffUser(req, res, next) {
     next();
   } catch (err) {
     console.error("attachStaffUser error", err);
-    res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Server error" } });
+    res
+      .status(500)
+      .json({ error: { code: "INTERNAL_ERROR", message: "Server error" } });
   }
 }
 
@@ -54,29 +61,39 @@ const ROLE_ORDER = ["viewer", "editor", "channel_manager", "team_lead", "directo
 export function requireAnyRole(roles = []) {
   return (req, res, next) => {
     if (!req.staffUser) {
-      return res.status(401).json({ error: { code: "UNAUTHENTICATED", message: "No staff user" } });
+      return res
+        .status(401)
+        .json({ error: { code: "UNAUTHENTICATED", message: "No staff user" } });
     }
     if (!roles.length || roles.includes(req.staffUser.role)) return next();
-    return res.status(403).json({ error: { code: "FORBIDDEN", message: "Insufficient role" } });
+    return res
+      .status(403)
+      .json({ error: { code: "FORBIDDEN", message: "Insufficient role" } });
   };
 }
 
 export function requireRoleAtLeast(minRole) {
   return (req, res, next) => {
     if (!req.staffUser) {
-      return res.status(401).json({ error: { code: "UNAUTHENTICATED", message: "No staff user" } });
+      return res
+        .status(401)
+        .json({ error: { code: "UNAUTHENTICATED", message: "No staff user" } });
     }
     const u = ROLE_ORDER.indexOf(req.staffUser.role);
     const m = ROLE_ORDER.indexOf(minRole);
     if (u >= 0 && m >= 0 && u >= m) return next();
-    return res.status(403).json({ error: { code: "FORBIDDEN", message: "Insufficient role" } });
+    return res
+      .status(403)
+      .json({ error: { code: "FORBIDDEN", message: "Insufficient role" } });
   };
 }
 
 export async function loadTeamContext(req, res, next) {
   try {
     if (!req.staffUser) {
-      return res.status(401).json({ error: { code: "UNAUTHENTICATED", message: "No staff user" } });
+      return res
+        .status(401)
+        .json({ error: { code: "UNAUTHENTICATED", message: "No staff user" } });
     }
     const userId = req.staffUser.id;
 
@@ -99,7 +116,9 @@ export async function loadTeamContext(req, res, next) {
     next();
   } catch (err) {
     console.error("loadTeamContext error", err);
-    res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Server error" } });
+    res
+      .status(500)
+      .json({ error: { code: "INTERNAL_ERROR", message: "Server error" } });
   }
 }
 
