@@ -1,3 +1,4 @@
+import YouTubeSyncPanel from "./YouTubeSyncPanel";
 import React, { useEffect, useState } from "react";
 import {
   Card,
