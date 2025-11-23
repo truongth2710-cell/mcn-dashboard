@@ -1,3 +1,4 @@
+
 import YouTubeSyncPanel from "./YouTubeSyncPanel";
 import React, { useEffect, useState } from "react";
 import {
@@ -173,6 +174,9 @@ const ReportsDashboard: React.FC = () => {
           <a onClick={handleRefresh}>{loading ? "Loading..." : "Refresh"}</a>
         </Space>
       </Space>
+
+      {/* Panel YouTube: Kết nối & Sync 30 ngày gần nhất */}
+      <YouTubeSyncPanel />
 
       <Row gutter={16} style={{ marginBottom: 16 }}>
         <Col span={8}>
