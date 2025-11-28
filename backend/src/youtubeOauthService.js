@@ -9,8 +9,13 @@ const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
 
 const SCOPES = [
+  // YouTube
   "https://www.googleapis.com/auth/youtube.readonly",
-  "https://www.googleapis.com/auth/yt-analytics.readonly"
+  "https://www.googleapis.com/auth/yt-analytics.readonly",
+
+  // Thêm quyền lấy email / profile để gọi oauth2.userinfo.get
+  "https://www.googleapis.com/auth/userinfo.email",
+  "https://www.googleapis.com/auth/userinfo.profile"
 ];
 
 function getOAuth2Client() {
