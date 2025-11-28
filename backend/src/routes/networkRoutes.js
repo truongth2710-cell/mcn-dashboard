@@ -1,14 +1,20 @@
 import express from "express";
 import { pool } from "../db.js";
-import { authMiddleware, requireRole } from "../auth.js";
+import { authMiddleware } from "../auth.js";
 
 const router = express.Router();
 
-// list networks
+/**
+ * List networks – ai đăng nhập cũng xem được.
+ */
 router.get("/", authMiddleware, async (req, res) => {
   try {
     const result = await pool.query(
-      "SELECT id, name, description FROM networks ORDER BY id DESC;"
+      `
+      SELECT id, name, description
+      FROM networks
+      ORDER BY id DESC;
+      `
     );
     res.json(result.rows);
   } catch (err) {
@@ -17,12 +23,21 @@ router.get("/", authMiddleware, async (req, res) => {
   }
 });
 
-// create network (admin)
-router.post("/", authMiddleware, requireRole("admin"), async (req, res) => {
+/**
+ * Tạo network (admin).
+ */
+router.post("/", authMiddleware, async (req, res) => {
   try {
+    if (!req.user || req.user.role !== "admin") {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     const { name, description } = req.body;
     const result = await pool.query(
-      "INSERT INTO networks (name, description) VALUES ($1, $2) RETURNING *;",
+      `
+      INSERT INTO networks (name, description)
+      VALUES ($1, $2)
+      RETURNING *;
+      `,
       [name, description || null]
     );
     res.json(result.rows[0]);
@@ -32,16 +47,21 @@ router.post("/", authMiddleware, requireRole("admin"), async (req, res) => {
   }
 });
 
-// update network (admin)
-router.put("/:id", authMiddleware, requireRole("admin"), async (req, res) => {
+/**
+ * Sửa network (admin).
+ */
+router.put("/:id", authMiddleware, async (req, res) => {
   try {
+    if (!req.user || req.user.role !== "admin") {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     const id = Number(req.params.id);
     const { name, description } = req.body;
     const result = await pool.query(
       `
       UPDATE networks
       SET
-        name        = COALESCE($1, name),
+        name = COALESCE($1, name),
         description = COALESCE($2, description)
       WHERE id = $3
       RETURNING *;
@@ -58,11 +78,22 @@ router.put("/:id", authMiddleware, requireRole("admin"), async (req, res) => {
   }
 });
 
-// delete network (admin)
-router.delete("/:id", authMiddleware, requireRole("admin"), async (req, res) => {
+/**
+ * Xóa network (admin).
+ */
+router.delete("/:id", authMiddleware, async (req, res) => {
   try {
+    if (!req.user || req.user.role !== "admin") {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     const id = Number(req.params.id);
-    await pool.query("DELETE FROM networks WHERE id = $1;", [id]);
+    await pool.query(
+      `
+      DELETE FROM networks
+      WHERE id = $1;
+      `,
+      [id]
+    );
     res.json({ success: true });
   } catch (err) {
     console.error("Delete network error:", err);

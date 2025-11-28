@@ -1,10 +1,12 @@
 import express from "express";
 import { pool } from "../db.js";
-import { authMiddleware, requireRole } from "../auth.js";
+import { authMiddleware } from "../auth.js";
 
 const router = express.Router();
 
-// list projects
+/**
+ * List projects – ai đăng nhập cũng xem được.
+ */
 router.get("/", authMiddleware, async (req, res) => {
   try {
     const result = await pool.query(
@@ -21,9 +23,14 @@ router.get("/", authMiddleware, async (req, res) => {
   }
 });
 
-// create project (admin)
-router.post("/", authMiddleware, requireRole("admin"), async (req, res) => {
+/**
+ * Tạo project (admin).
+ */
+router.post("/", authMiddleware, async (req, res) => {
   try {
+    if (!req.user || req.user.role !== "admin") {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     const { name, description, start_date, end_date } = req.body;
     const result = await pool.query(
       `
@@ -40,9 +47,14 @@ router.post("/", authMiddleware, requireRole("admin"), async (req, res) => {
   }
 });
 
-// update project (admin)
-router.put("/:id", authMiddleware, requireRole("admin"), async (req, res) => {
+/**
+ * Sửa project (admin).
+ */
+router.put("/:id", authMiddleware, async (req, res) => {
   try {
+    if (!req.user || req.user.role !== "admin") {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     const id = Number(req.params.id);
     const { name, description, start_date, end_date } = req.body;
     const result = await pool.query(
@@ -68,11 +80,22 @@ router.put("/:id", authMiddleware, requireRole("admin"), async (req, res) => {
   }
 });
 
-// delete project (admin)
-router.delete("/:id", authMiddleware, requireRole("admin"), async (req, res) => {
+/**
+ * Xóa project (admin).
+ */
+router.delete("/:id", authMiddleware, async (req, res) => {
   try {
+    if (!req.user || req.user.role !== "admin") {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     const id = Number(req.params.id);
-    await pool.query("DELETE FROM projects WHERE id = $1;", [id]);
+    await pool.query(
+      `
+      DELETE FROM projects
+      WHERE id = $1;
+      `,
+      [id]
+    );
     res.json({ success: true });
   } catch (err) {
     console.error("Delete project error:", err);

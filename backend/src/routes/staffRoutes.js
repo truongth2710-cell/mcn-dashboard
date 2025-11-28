@@ -1,20 +1,23 @@
 import express from "express";
 import { pool } from "../db.js";
-import { authMiddleware, requireRole } from "../auth.js";
+import { authMiddleware } from "../auth.js";
 
 const router = express.Router();
 
 /**
- * List staff for admin.
- * Hide "deleted" users.
+ * Danh sách nhân sự (admin).
  */
-router.get("/", authMiddleware, requireRole("admin"), async (req, res) => {
+router.get("/", authMiddleware, async (req, res) => {
   try {
+    if (!req.user || req.user.role !== "admin") {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
     const result = await pool.query(
       `
       SELECT id, name, email, role
       FROM staff_users
-      WHERE role IS NULL OR role <> 'deleted'
+      WHERE role <> 'deleted'
       ORDER BY id DESC;
       `
     );
@@ -26,34 +29,38 @@ router.get("/", authMiddleware, requireRole("admin"), async (req, res) => {
 });
 
 /**
- * Soft delete staff:
- * - remove mappings in staff_channels
- * - mark role = 'deleted'
+ * Soft delete nhân sự:
+ * - xóa mapping staff_channels
+ * - set role = 'deleted'
  */
-router.delete("/:id", authMiddleware, requireRole("admin"), async (req, res) => {
-  const client = await pool.connect();
+router.delete("/:id", authMiddleware, async (req, res) => {
   try {
+    if (!req.user || req.user.role !== "admin") {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     const id = Number(req.params.id);
-    await client.query("BEGIN");
 
-    await client.query(
-      "DELETE FROM staff_channels WHERE staff_id = $1;",
+    await pool.query(
+      `
+      DELETE FROM staff_channels
+      WHERE staff_id = $1;
+      `,
       [id]
     );
 
-    await client.query(
-      "UPDATE staff_users SET role = 'deleted' WHERE id = $1;",
+    await pool.query(
+      `
+      UPDATE staff_users
+      SET role = 'deleted'
+      WHERE id = $1;
+      `,
       [id]
     );
 
-    await client.query("COMMIT");
     res.json({ success: true });
   } catch (err) {
-    await client.query("ROLLBACK");
     console.error("Delete staff error:", err);
     res.status(500).json({ error: "DB error" });
-  } finally {
-    client.release();
   }
 });
 

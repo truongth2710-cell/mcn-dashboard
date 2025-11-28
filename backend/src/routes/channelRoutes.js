@@ -1,70 +1,28 @@
 import express from "express";
 import { pool } from "../db.js";
-import { authMiddleware, requireRole } from "../auth.js";
+import { authMiddleware } from "../auth.js";
 
 const router = express.Router();
 
 /**
- * List channels with meta info (used for admin screens).
+ * Lấy danh sách kênh thô (nếu cần).
+ * App frontend hiện chủ yếu dùng /dashboard/channels, nhưng giữ lại cho tương thích.
  */
 router.get("/", authMiddleware, async (req, res) => {
   try {
-    const user = req.user;
-
-    let result;
-    if (user.role === "admin") {
-      result = await pool.query(
-        `
-        SELECT
-          c.id,
-          c.name,
-          c.youtube_channel_id,
-          c.network_id,
-          c.team_id,
-          n.name  AS network_name,
-          t.name  AS team_name,
-          m.id    AS manager_id,
-          m.name  AS manager_name
-        FROM channels c
-        LEFT JOIN networks n ON c.network_id = n.id
-        LEFT JOIN teams    t ON c.team_id    = t.id
-        LEFT JOIN staff_channels scm
-          ON scm.channel_id = c.id AND scm.role = 'manager'
-        LEFT JOIN staff_users m
-          ON m.id = scm.staff_id
-        WHERE c.status = 'active'
-        ORDER BY c.created_at DESC;
-        `
-      );
-    } else {
-      result = await pool.query(
-        `
-        SELECT
-          c.id,
-          c.name,
-          c.youtube_channel_id,
-          c.network_id,
-          c.team_id,
-          n.name  AS network_name,
-          t.name  AS team_name,
-          m.id    AS manager_id,
-          m.name  AS manager_name
-        FROM channels c
-        INNER JOIN staff_channels sc
-          ON sc.channel_id = c.id AND sc.staff_id = $1
-        LEFT JOIN networks n ON c.network_id = n.id
-        LEFT JOIN teams    t ON c.team_id    = t.id
-        LEFT JOIN staff_channels scm
-          ON scm.channel_id = c.id AND scm.role = 'manager'
-        LEFT JOIN staff_users m
-          ON m.id = scm.staff_id
-        WHERE c.status = 'active'
-        ORDER BY c.created_at DESC;
-        `,
-        [user.id]
-      );
-    }
-
+    const result = await pool.query(
+      `
+      SELECT
+        c.id,
+        c.name,
+        c.youtube_channel_id,
+        c.network_id,
+        c.team_id,
+        c.status
+      FROM channels c
+      ORDER BY c.id DESC;
+      `
+    );
     res.json(result.rows);
   } catch (err) {
     console.error("List channels error:", err);
@@ -73,119 +31,122 @@ router.get("/", authMiddleware, async (req, res) => {
 });
 
 /**
- * Update channel meta: name/network/team/status + manager (via staff_channels).
+ * Cập nhật meta kênh (admin only):
+ * - network_id
+ * - team_id
+ * - manager_id (qua staff_channels, role = 'manager')
+ * - status
  */
-router.put("/:id", authMiddleware, requireRole("admin"), async (req, res) => {
-  const client = await pool.connect();
+router.put("/:id", authMiddleware, async (req, res) => {
   try {
+    if (!req.user || req.user.role !== "admin") {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
     const id = Number(req.params.id);
-    const {
-      name,
-      network_id,
-      team_id,
-      status,
-      manager_id
-    } = req.body;
+    const { name, network_id, team_id, manager_id, status } = req.body;
 
-    await client.query("BEGIN");
-
-    const updateRes = await client.query(
+    // update channels
+    const result = await pool.query(
       `
       UPDATE channels
       SET
         name       = COALESCE($1, name),
-        network_id = $2,
-        team_id    = $3,
+        network_id = COALESCE($2, network_id),
+        team_id    = COALESCE($3, team_id),
         status     = COALESCE($4, status)
       WHERE id = $5
       RETURNING *;
       `,
-      [
-        name || null,
-        network_id || null,
-        team_id || null,
-        status || null,
-        id
-      ]
+      [name || null, network_id || null, team_id || null, status || null, id]
     );
 
-    if (!updateRes.rows.length) {
-      await client.query("ROLLBACK");
+    if (!result.rows.length) {
       return res.status(404).json({ error: "Channel not found" });
     }
 
-    // if manager_id is present in body, update staff_channels mapping
-    if (Object.prototype.hasOwnProperty.call(req.body, "manager_id")) {
-      await client.query(
+    // cập nhật manager (bảng staff_channels)
+    if (manager_id !== undefined) {
+      // xóa manager cũ
+      await pool.query(
         `
         DELETE FROM staff_channels
-        WHERE channel_id = $1 AND role = 'manager';
+        WHERE channel_id = $1
+        AND role = 'manager';
         `,
         [id]
       );
-
+      // nếu có manager mới -> insert
       if (manager_id) {
-        await client.query(
+        await pool.query(
           `
           INSERT INTO staff_channels (staff_id, channel_id, role)
           VALUES ($1, $2, 'manager')
-          ON CONFLICT (staff_id, channel_id) DO UPDATE
-            SET role = EXCLUDED.role;
+          ON CONFLICT (staff_id, channel_id, role) DO NOTHING;
           `,
-          [Number(manager_id), id]
+          [manager_id, id]
         );
       }
     }
 
-    await client.query("COMMIT");
-    res.json(updateRes.rows[0]);
+    res.json(result.rows[0]);
   } catch (err) {
-    await client.query("ROLLBACK");
     console.error("Update channel error:", err);
     res.status(500).json({ error: "DB error" });
-  } finally {
-    client.release();
   }
 });
 
 /**
- * Assign channel to staff with arbitrary role (manager/editor...).
+ * Soft delete channel (admin only): set status = 'deleted'
  */
-router.post("/assign", authMiddleware, requireRole("admin"), async (req, res) => {
+router.delete("/:id", authMiddleware, async (req, res) => {
   try {
-    const { staff_id, channel_id, role } = req.body;
-    if (!staff_id || !channel_id) {
-      return res.status(400).json({ error: "staff_id and channel_id required" });
+    if (!req.user || req.user.role !== "admin") {
+      return res.status(403).json({ error: "Forbidden" });
     }
-    await pool.query(
-      `
-      INSERT INTO staff_channels (staff_id, channel_id, role)
-      VALUES ($1, $2, $3)
-      ON CONFLICT (staff_id, channel_id) DO UPDATE
-        SET role = EXCLUDED.role;
-      `,
-      [Number(staff_id), Number(channel_id), role || "manager"]
-    );
-    res.json({ success: true });
-  } catch (err) {
-    console.error("Assign channel error:", err);
-    res.status(500).json({ error: "DB error" });
-  }
-});
-
-/**
- * Soft delete channel for admin.
- */
-router.delete("/:id", authMiddleware, requireRole("admin"), async (req, res) => {
-  try {
     const id = Number(req.params.id);
     await pool.query(
-      `UPDATE channels SET status = 'deleted' WHERE id = $1;`,
+      `
+      UPDATE channels
+      SET status = 'deleted'
+      WHERE id = $1;
+      `,
       [id]
     );
     res.json({ success: true });
   } catch (err) {
     console.error("Delete channel error:", err);
+    res.status(500).json({ error: "DB error" });
+  }
+});
+
+/**
+ * Gán kênh cho nhân sự (admin).
+ * body: { staff_id, channel_id, role }
+ */
+router.post("/assign", authMiddleware, async (req, res) => {
+  try {
+    if (!req.user || req.user.role !== "admin") {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const { staff_id, channel_id, role } = req.body;
+    if (!staff_id || !channel_id) {
+      return res.status(400).json({ error: "Missing staff_id or channel_id" });
+    }
+
+    await pool.query(
+      `
+      INSERT INTO staff_channels (staff_id, channel_id, role)
+      VALUES ($1, $2, COALESCE($3, 'manager'))
+      ON CONFLICT (staff_id, channel_id, role) DO NOTHING;
+      `,
+      [staff_id, channel_id, role || "manager"]
+    );
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Assign channel error:", err);
     res.status(500).json({ error: "DB error" });
   }
 });
