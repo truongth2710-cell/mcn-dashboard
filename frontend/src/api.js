@@ -1,5 +1,4 @@
-const API_BASE =
-  import.meta.env.VITE_API_BASE || "https://api2.thesun.media/api";
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000/api";
 
 export async function api(path, options = {}) {
   const token = localStorage.getItem("yt_token");
@@ -8,29 +7,12 @@ export async function api(path, options = {}) {
     ...(options.headers || {})
   };
   if (token) {
-    headers.Authorization = `Bearer ${token}`;
+    headers["Authorization"] = `Bearer ${token}`;
   }
-
-  const res = await fetch(API_BASE + path, {
-    ...options,
-    headers
-  });
-
+  const res = await fetch(API_BASE + path, { ...options, headers });
+  const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    let message = `HTTP ${res.status}`;
-    try {
-      const data = await res.json();
-      if (data && data.error) message = data.error;
-      if (data && data.message) message = data.message;
-    } catch {
-      // ignore
-    }
-    throw new Error(message);
+    throw new Error(data.error || "Request failed");
   }
-
-  try {
-    return await res.json();
-  } catch {
-    return null;
-  }
+  return data;
 }
