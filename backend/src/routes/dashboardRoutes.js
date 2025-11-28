@@ -4,234 +4,219 @@ import { authMiddleware } from "../auth.js";
 
 const router = express.Router();
 
-async function getVisibleChannelIds(user) {
-  if (user.role === "admin") {
-    const result = await pool.query("SELECT id FROM channels WHERE status = 'active'");
-    return result.rows.map((r) => r.id);
+// helper build filter by date + team/network/manager
+function buildFilterClause(query, user) {
+  const {
+    from,
+    to,
+    teamId,
+    networkId,
+    managerId
+  } = query;
+
+  const values = [];
+  const whereParts = ["c.status = 'active'"];
+
+  // date range
+  if (from) {
+    values.push(from);
+    whereParts.push(`d.date >= $${values.length}`);
   }
-  const result = await pool.query(
-    `
-    SELECT c.id
-    FROM channels c
-    INNER JOIN staff_channels sc ON sc.channel_id = c.id
-    WHERE sc.staff_id = $1
-      AND c.status = 'active';
-    `,
-    [user.id]
-  );
-  return result.rows.map((r) => r.id);
+  if (to) {
+    values.push(to);
+    whereParts.push(`d.date <= $${values.length}`);
+  }
+
+  if (teamId) {
+    values.push(Number(teamId));
+    whereParts.push(`c.team_id = $${values.length}`);
+  }
+  if (networkId) {
+    values.push(Number(networkId));
+    whereParts.push(`c.network_id = $${values.length}`);
+  }
+  if (managerId) {
+    values.push(Number(managerId));
+    whereParts.push(`c.manager_id = $${values.length}`);
+  }
+
+  // hạn chế theo user nếu không phải admin
+  if (user.role !== "admin") {
+    values.push(user.id);
+    whereParts.push(
+      `EXISTS (
+        SELECT 1 FROM staff_channels sc
+        WHERE sc.channel_id = c.id AND sc.staff_id = $${values.length}
+      )`
+    );
+  }
+
+  const whereSql = whereParts.length ? "WHERE " + whereParts.join(" AND ") : "";
+  return { whereSql, values };
 }
 
-// Overall summary
+// summary tổng
 router.get("/summary", authMiddleware, async (req, res) => {
   try {
     const user = req.user;
-    const from = req.query.from || "2000-01-01";
-    const to = req.query.to || "2100-01-01";
+    const { whereSql, values } = buildFilterClause(req.query, user);
 
-    const channelIds = await getVisibleChannelIds(user);
-    if (channelIds.length === 0) {
-      return res.json({
-        totalViews: 0,
-        totalRevenue: 0,
-        totalWatchTime: 0,
-        avgRPM: 0,
-        daily: []
-      });
-    }
-
-    const sumResult = await pool.query(
-      `
+    const sql = `
       SELECT
-        COALESCE(SUM(views), 0) AS total_views,
-        COALESCE(SUM(watch_time_minutes), 0) AS total_watch_time,
-        COALESCE(SUM(revenue), 0) AS total_revenue
-      FROM channel_metrics_daily
-      WHERE channel_id = ANY($1::int[])
-        AND date BETWEEN $2 AND $3;
-      `,
-      [channelIds, from, to]
-    );
-
-    const dailyResult = await pool.query(
-      `
-      SELECT date,
-             SUM(views) AS views,
-             SUM(revenue) AS revenue
-      FROM channel_metrics_daily
-      WHERE channel_id = ANY($1::int[])
-        AND date BETWEEN $2 AND $3
-      GROUP BY date
-      ORDER BY date ASC;
-      `,
-      [channelIds, from, to]
-    );
-
-    const row = sumResult.rows[0];
-    const totalViews = Number(row.total_views) || 0;
-    const totalRevenue = Number(row.total_revenue) || 0;
-    const totalWatchTime = Number(row.total_watch_time) || 0;
-    const avgRPM = totalViews > 0 ? (totalRevenue / totalViews) * 1000 : 0;
-
+        COALESCE(SUM(d.views), 0) AS total_views,
+        COALESCE(SUM(d.revenue), 0) AS total_revenue,
+        COALESCE(SUM(d.watch_time_minutes), 0) AS total_watch_time,
+        CASE
+          WHEN SUM(d.views) > 0
+            THEN SUM(d.revenue) * 1000.0 / SUM(d.views)
+          ELSE 0
+        END AS avg_rpm
+      FROM channel_metrics_daily d
+      JOIN channels c ON c.id = d.channel_id
+      ${whereSql};
+    `;
+    const result = await pool.query(sql, values);
+    const row = result.rows[0] || {};
     res.json({
-      totalViews,
-      totalRevenue,
-      totalWatchTime,
-      avgRPM,
-      daily: dailyResult.rows
+      totalViews: Number(row.total_views || 0),
+      totalRevenue: Number(row.total_revenue || 0),
+      totalWatchTime: Number(row.total_watch_time || 0),
+      avgRPM: Number(row.avg_rpm || 0)
     });
   } catch (err) {
     console.error("Dashboard summary error:", err);
-    res.status(500).json({ error: "Server error" });
+    res.status(500).json({ error: "DB error" });
   }
 });
 
-// Per-channel summary
+// danh sách kênh + metrics
 router.get("/channels", authMiddleware, async (req, res) => {
   try {
     const user = req.user;
-    const from = req.query.from || "2000-01-01";
-    const to = req.query.to || "2100-01-01";
+    const { whereSql, values } = buildFilterClause(req.query, user);
 
-    const channelIds = await getVisibleChannelIds(user);
-    if (channelIds.length === 0) {
-      return res.json([]);
-    }
-
-    const result = await pool.query(
-      `
+    const sql = `
       SELECT
         c.id AS channel_id,
         c.name,
         c.youtube_channel_id,
-        COALESCE(SUM(m.views), 0) AS views,
-        COALESCE(SUM(m.revenue), 0) AS revenue,
-        COALESCE(SUM(m.watch_time_minutes), 0) AS watch_time_minutes,
-        COALESCE(SUM(m.subs_gained), 0) AS subs_gained,
-        COALESCE(SUM(m.subs_lost), 0) AS subs_lost
+        c.network_id,
+        c.team_id,
+        c.manager_id,
+        n.name AS network_name,
+        t.name AS team_name,
+        m.name AS manager_name,
+        COALESCE(SUM(d.views), 0) AS views,
+        COALESCE(SUM(d.revenue), 0) AS revenue,
+        CASE
+          WHEN SUM(d.views) > 0
+            THEN SUM(d.revenue) * 1000.0 / SUM(d.views)
+          ELSE 0
+        END AS rpm
       FROM channels c
-      LEFT JOIN channel_metrics_daily m
-        ON m.channel_id = c.id
-       AND m.date BETWEEN $1 AND $2
-      WHERE c.id = ANY($3::int[])
-      GROUP BY c.id, c.name, c.youtube_channel_id
-      ORDER BY revenue DESC;
-      `,
-      [from, to, channelIds]
-    );
-
-    const rows = result.rows.map((r) => {
-      const views = Number(r.views) || 0;
-      const revenue = Number(r.revenue) || 0;
-      const rpm = views > 0 ? (revenue / views) * 1000 : 0;
-      return {
-        channel_id: r.channel_id,
-        name: r.name,
-        youtube_channel_id: r.youtube_channel_id,
-        views,
-        revenue,
-        watch_time_minutes: Number(r.watch_time_minutes) || 0,
-        subs_gained: Number(r.subs_gained) || 0,
-        subs_lost: Number(r.subs_lost) || 0,
-        rpm
-      };
-    });
-
-    res.json(rows);
+      LEFT JOIN channel_metrics_daily d ON d.channel_id = c.id
+      LEFT JOIN networks n ON c.network_id = n.id
+      LEFT JOIN teams t ON c.team_id = t.id
+      LEFT JOIN staff_users m ON c.manager_id = m.id
+      ${whereSql}
+      GROUP BY
+        c.id,
+        c.name,
+        c.youtube_channel_id,
+        c.network_id,
+        c.team_id,
+        c.manager_id,
+        n.name,
+        t.name,
+        m.name
+      ORDER BY views DESC;
+    `;
+    const result = await pool.query(sql, values);
+    res.json(result.rows);
   } catch (err) {
     console.error("Dashboard channels error:", err);
-    res.status(500).json({ error: "Server error" });
+    res.status(500).json({ error: "DB error" });
   }
 });
 
-// Team summary
+// tổng theo team
 router.get("/team-summary", authMiddleware, async (req, res) => {
   try {
-    const from = req.query.from || "2000-01-01";
-    const to = req.query.to || "2100-01-01";
+    const user = req.user;
+    const { whereSql, values } = buildFilterClause(req.query, user);
 
-    const result = await pool.query(
-      `
+    const sql = `
       SELECT
-        t.id AS team_id,
+        t.id,
         t.name AS team_name,
-        COALESCE(SUM(m.views), 0) AS views,
-        COALESCE(SUM(m.revenue), 0) AS revenue
-      FROM teams t
-      LEFT JOIN channels c ON c.team_id = t.id
-      LEFT JOIN channel_metrics_daily m
-        ON m.channel_id = c.id
-       AND m.date BETWEEN $1 AND $2
+        COALESCE(SUM(d.views), 0) AS views,
+        COALESCE(SUM(d.revenue), 0) AS revenue
+      FROM channels c
+      JOIN teams t ON c.team_id = t.id
+      LEFT JOIN channel_metrics_daily d ON d.channel_id = c.id
+      ${whereSql.replace("WHERE", "WHERE")} -- reuse filters
       GROUP BY t.id, t.name
-      ORDER BY revenue DESC;
-      `,
-      [from, to]
-    );
+      ORDER BY views DESC;
+    `;
+    const result = await pool.query(sql, values);
     res.json(result.rows);
   } catch (err) {
     console.error("Team summary error:", err);
-    res.status(500).json({ error: "Server error" });
+    res.status(500).json({ error: "DB error" });
   }
 });
 
-// Network summary
+// theo network
 router.get("/network-summary", authMiddleware, async (req, res) => {
   try {
-    const from = req.query.from || "2000-01-01";
-    const to = req.query.to || "2100-01-01";
+    const user = req.user;
+    const { whereSql, values } = buildFilterClause(req.query, user);
 
-    const result = await pool.query(
-      `
+    const sql = `
       SELECT
-        n.id AS network_id,
+        n.id,
         n.name AS network_name,
-        COALESCE(SUM(m.views), 0) AS views,
-        COALESCE(SUM(m.revenue), 0) AS revenue
-      FROM networks n
-      LEFT JOIN channels c ON c.network_id = n.id
-      LEFT JOIN channel_metrics_daily m
-        ON m.channel_id = c.id
-       AND m.date BETWEEN $1 AND $2
+        COALESCE(SUM(d.views), 0) AS views,
+        COALESCE(SUM(d.revenue), 0) AS revenue
+      FROM channels c
+      JOIN networks n ON c.network_id = n.id
+      LEFT JOIN channel_metrics_daily d ON d.channel_id = c.id
+      ${whereSql.replace("WHERE", "WHERE")}
       GROUP BY n.id, n.name
-      ORDER BY revenue DESC;
-      `,
-      [from, to]
-    );
+      ORDER BY views DESC;
+    `;
+    const result = await pool.query(sql, values);
     res.json(result.rows);
   } catch (err) {
     console.error("Network summary error:", err);
-    res.status(500).json({ error: "Server error" });
+    res.status(500).json({ error: "DB error" });
   }
 });
 
-// Project summary
+// theo project (nếu c.project_id tồn tại)
 router.get("/project-summary", authMiddleware, async (req, res) => {
   try {
-    const from = req.query.from || "2000-01-01";
-    const to = req.query.to || "2100-01-01";
+    const user = req.user;
+    const { whereSql, values } = buildFilterClause(req.query, user);
 
-    const result = await pool.query(
-      `
+    const sql = `
       SELECT
-        p.id AS project_id,
+        p.id,
         p.name AS project_name,
-        COALESCE(SUM(m.views), 0) AS views,
-        COALESCE(SUM(m.revenue), 0) AS revenue
-      FROM projects p
-      LEFT JOIN project_channels pc ON pc.project_id = p.id
-      LEFT JOIN channels c ON pc.channel_id = c.id
-      LEFT JOIN channel_metrics_daily m
-        ON m.channel_id = c.id
-       AND m.date BETWEEN $1 AND $2
+        COALESCE(SUM(d.views), 0) AS views,
+        COALESCE(SUM(d.revenue), 0) AS revenue
+      FROM channels c
+      JOIN projects p ON c.project_id = p.id
+      LEFT JOIN channel_metrics_daily d ON d.channel_id = c.id
+      ${whereSql.replace("WHERE", "WHERE")}
       GROUP BY p.id, p.name
-      ORDER BY revenue DESC;
-      `,
-      [from, to]
-    );
+      ORDER BY views DESC;
+    `;
+    const result = await pool.query(sql, values);
     res.json(result.rows);
   } catch (err) {
     console.error("Project summary error:", err);
-    res.status(500).json({ error: "Server error" });
+    res.status(500).json({ error: "DB error" });
   }
 });
 
