@@ -37,4 +37,18 @@ router.post("/", authMiddleware, requireRole("admin"), async (req, res) => {
   }
 });
 
+// DELETE
+
+router.delete("/:id", authMiddleware, requireRole("admin"), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    await pool.query("DELETE FROM teams WHERE id = $1;", [id]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Delete team error:", err);
+    res.status(500).json({ error: "DB error" });
+  }
+});
+
+
 export default router;
