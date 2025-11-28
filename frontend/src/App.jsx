@@ -11,7 +11,7 @@ import {
 } from "recharts";
 import { api } from "./api";
 
-/* ---------- helpers ---------- */
+/* -------- helpers -------- */
 
 function formatNumber(n) {
   return (n || 0).toLocaleString("en-US");
@@ -24,9 +24,8 @@ function formatCurrency(n) {
   });
 }
 
-/**
- * Hook load dữ liệu dashboard theo khoảng ngày + filter nâng cao.
- */
+/* -------- hooks -------- */
+
 function useDashboardData(from, to, filters) {
   const [summary, setSummary] = useState(null);
   const [channels, setChannels] = useState([]);
@@ -36,13 +35,13 @@ function useDashboardData(from, to, filters) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  const buildQueryString = () => {
+  const buildQuery = () => {
     const parts = [];
     if (from) parts.push(`from=${from}`);
     if (to) parts.push(`to=${to}`);
-    if (filters?.teamId) parts.push(`teamId=${filters.teamId}`);
-    if (filters?.networkId) parts.push(`networkId=${filters.networkId}`);
-    if (filters?.managerId) parts.push(`managerId=${filters.managerId}`);
+    if (filters.teamId) parts.push(`teamId=${filters.teamId}`);
+    if (filters.networkId) parts.push(`networkId=${filters.networkId}`);
+    if (filters.managerId) parts.push(`managerId=${filters.managerId}`);
     return parts.length ? "?" + parts.join("&") : "";
   };
 
@@ -50,7 +49,7 @@ function useDashboardData(from, to, filters) {
     try {
       setLoading(true);
       setError(null);
-      const qs = buildQueryString();
+      const qs = buildQuery();
       const [s, c, ts, ns, ps] = await Promise.all([
         api("/dashboard/summary" + qs),
         api("/dashboard/channels" + qs),
@@ -59,12 +58,12 @@ function useDashboardData(from, to, filters) {
         api("/dashboard/project-summary" + qs)
       ]);
       setSummary(s);
-      setChannels(c);
-      setTeamSummary(ts);
-      setNetworkSummary(ns);
-      setProjectSummary(ps);
+      setChannels(c || []);
+      setTeamSummary(ts || []);
+      setNetworkSummary(ns || []);
+      setProjectSummary(ps || []);
     } catch (e) {
-      setError(e.message || "Dashboard load error");
+      setError(e.message || "Dashboard error");
     } finally {
       setLoading(false);
     }
@@ -82,21 +81,18 @@ function useDashboardData(from, to, filters) {
   };
 }
 
-/**
- * Hook load timeseries doanh thu kênh để vẽ biểu đồ.
- */
 function useChannelTimeseries(from, to, filters) {
   const [series, setSeries] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  const buildQueryString = () => {
+  const buildQuery = () => {
     const parts = [];
     if (from) parts.push(`from=${from}`);
     if (to) parts.push(`to=${to}`);
-    if (filters?.teamId) parts.push(`teamId=${filters.teamId}`);
-    if (filters?.networkId) parts.push(`networkId=${filters.networkId}`);
-    if (filters?.managerId) parts.push(`managerId=${filters.managerId}`);
+    if (filters.teamId) parts.push(`teamId=${filters.teamId}`);
+    if (filters.networkId) parts.push(`networkId=${filters.networkId}`);
+    if (filters.managerId) parts.push(`managerId=${filters.managerId}`);
     return parts.length ? "?" + parts.join("&") : "";
   };
 
@@ -104,11 +100,11 @@ function useChannelTimeseries(from, to, filters) {
     try {
       setLoading(true);
       setError(null);
-      const qs = buildQueryString();
+      const qs = buildQuery();
       const data = await api("/dashboard/channel-timeseries" + qs);
       setSeries(data || []);
     } catch (e) {
-      setError(e.message || "Timeseries load error");
+      setError(e.message || "Timeseries error");
     } finally {
       setLoading(false);
     }
@@ -117,7 +113,7 @@ function useChannelTimeseries(from, to, filters) {
   return { series, loading, error, reload };
 }
 
-/* ---------- auth / layout ---------- */
+/* -------- auth / layout -------- */
 
 function Login({ onLoggedIn }) {
   const [email, setEmail] = useState("");
@@ -191,7 +187,7 @@ function Login({ onLoggedIn }) {
   );
 }
 
-function TopBar({ user, onLogout, currentTab, setTab }) {
+function TopBar({ user, onLogout, tab, setTab }) {
   const tabs = [
     { key: "dashboard", label: "Dashboard" },
     { key: "channels", label: "Kênh" },
@@ -208,7 +204,7 @@ function TopBar({ user, onLogout, currentTab, setTab }) {
           {tabs.map((t) => (
             <button
               key={t.key}
-              className={currentTab === t.key ? "tab active" : "tab"}
+              className={tab === t.key ? "tab active" : "tab"}
               onClick={() => setTab(t.key)}
             >
               {t.label}
@@ -229,7 +225,7 @@ function TopBar({ user, onLogout, currentTab, setTab }) {
   );
 }
 
-/* ---------- generic components ---------- */
+/* -------- generic components -------- */
 
 function SimpleListCard({ title, items, columns, emptyLabel = "Chưa có dữ liệu" }) {
   return (
@@ -276,7 +272,7 @@ function SimpleListCard({ title, items, columns, emptyLabel = "Chưa có dữ li
   );
 }
 
-/* ---------- dashboard ---------- */
+/* -------- dashboard -------- */
 
 function SummaryCards({ summary }) {
   return (
@@ -289,7 +285,9 @@ function SummaryCards({ summary }) {
         </div>
         <div className="kpi">
           <div className="label">Tổng doanh thu</div>
-          <div className="value-lg">{formatCurrency(summary?.totalRevenue)}</div>
+          <div className="value-lg">
+            {formatCurrency(summary?.totalRevenue)}
+          </div>
         </div>
         <div className="kpi">
           <div className="label">Doanh thu Hoa Kỳ</div>
@@ -309,9 +307,12 @@ function SummaryCards({ summary }) {
 }
 
 function ChannelChart({ from, to, filters }) {
-  const { series, loading, error, reload } = useChannelTimeseries(from, to, filters);
+  const { series, loading, error, reload } = useChannelTimeseries(
+    from,
+    to,
+    filters
+  );
 
-  // build recharts data: mỗi ngày 1 object, mỗi channel 1 field `ch_${id}`
   const { data, lines } = useMemo(() => {
     const byDate = new Map();
     const channelNames = new Map();
@@ -327,17 +328,15 @@ function ChannelChart({ from, to, filters }) {
       byDate.get(date)[key] = Number(row.revenue || 0);
     }
 
-    const dataArr = Array.from(byDate.values()).sort((a, b) =>
+    const arr = Array.from(byDate.values()).sort((a, b) =>
       a.date.localeCompare(b.date)
     );
     const keys = Array.from(channelNames.keys());
-    const linesArr = keys.map((key, idx) => ({
+    const lineDefs = keys.map((key) => ({
       dataKey: key,
-      name: channelNames.get(key),
-      strokeIndex: idx
+      name: channelNames.get(key)
     }));
-
-    return { data: dataArr, lines: linesArr };
+    return { data: arr, lines: lineDefs };
   }, [series]);
 
   useEffect(() => {
@@ -383,30 +382,36 @@ function ChannelChart({ from, to, filters }) {
   );
 }
 
-function DashboardTab({
-  summary,
-  channels,
-  teamSummary,
-  networkSummary,
-  projectSummary,
-  from,
-  to,
-  setFrom,
-  setTo,
-  filterTeamId,
-  setFilterTeamId,
-  filterNetworkId,
-  setFilterNetworkId,
-  filterManagerId,
-  setFilterManagerId,
-  staff,
-  teams,
-  networks,
-  loading,
-  error,
-  reload
-}) {
-  const filters = { teamId: filterTeamId, networkId: filterNetworkId, managerId: filterManagerId };
+function DashboardTab(props) {
+  const {
+    summary,
+    channels,
+    teamSummary,
+    networkSummary,
+    projectSummary,
+    from,
+    to,
+    setFrom,
+    setTo,
+    filterTeamId,
+    setFilterTeamId,
+    filterNetworkId,
+    setFilterNetworkId,
+    filterManagerId,
+    setFilterManagerId,
+    staff,
+    teams,
+    networks,
+    loading,
+    error,
+    reload
+  } = props;
+
+  const filters = {
+    teamId: filterTeamId,
+    networkId: filterNetworkId,
+    managerId: filterManagerId
+  };
 
   return (
     <>
@@ -421,7 +426,6 @@ function DashboardTab({
           <span>→</span>
           <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
         </div>
-
         <div className="filter-group">
           <select
             value={filterTeamId}
@@ -458,7 +462,6 @@ function DashboardTab({
           </select>
           <button onClick={reload}>Cập nhật</button>
         </div>
-
         <div>
           {loading && <span className="muted">Đang tải dữ liệu...</span>}
           {error && <span className="error-inline">Lỗi: {error}</span>}
@@ -524,7 +527,7 @@ function DashboardTab({
   );
 }
 
-/* ---------- channels tab ---------- */
+/* -------- channels tab -------- */
 
 function ChannelAvatar({ name, avatar_url }) {
   const initial = (name || "?")[0].toUpperCase();
@@ -593,11 +596,11 @@ function ChannelsTable({
 
   const handleMetaChange = (ch, field, value) => {
     if (!onUpdateChannelMeta) return;
-    const parsedValue = value ? Number(value) : null;
-    onUpdateChannelMeta({
+    const payload = {
       ...ch,
-      [field]: parsedValue
-    });
+      [field]: value ? Number(value) : null
+    };
+    onUpdateChannelMeta(payload);
   };
 
   const openChannel = (youtubeId) => {
@@ -656,6 +659,7 @@ function ChannelsTable({
           <span className="badge">{channels?.length || 0} kênh</span>
         </div>
       </div>
+
       <table className="table">
         <thead>
           <tr>
@@ -674,7 +678,7 @@ function ChannelsTable({
         </thead>
         <tbody>
           {filtered.map((ch) => {
-            const rowId = ch.channel_id || ch.id;
+            const rowId = ch.channel_id ?? ch.id;
             const rpmVal = Number(ch.rpm ?? 0);
             const subs = ch.subscribers || 0;
             return (
@@ -718,9 +722,7 @@ function ChannelsTable({
                   {isAdmin && teamOptions.length ? (
                     <select
                       value={ch.team_id || ""}
-                      onChange={(e) =>
-                        handleMetaChange(ch, "team_id", e.target.value)
-                      }
+                      onChange={(e) => handleMetaChange(ch, "team_id", e.target.value)}
                     >
                       <option value="">(none)</option>
                       {teamOptions.map((t) => (
@@ -787,7 +789,7 @@ function ChannelsTable({
   );
 }
 
-/* ---------- staff / teams / networks / projects tabs ---------- */
+/* -------- staff / master tabs -------- */
 
 function StaffTab({ staff, isAdmin, reloadMaster, channels }) {
   const [email, setEmail] = useState("");
@@ -911,7 +913,7 @@ function StaffTab({ staff, isAdmin, reloadMaster, channels }) {
             >
               <option value="">Chọn kênh...</option>
               {channels.map((c) => (
-                <option key={c.channel_id || c.id} value={c.channel_id || c.id}>
+                <option key={c.channel_id ?? c.id} value={c.channel_id ?? c.id}>
                   {c.name} ({c.youtube_channel_id})
                 </option>
               ))}
@@ -1405,7 +1407,7 @@ function ProjectsTab({ projects, reloadMaster, isAdmin }) {
   );
 }
 
-/* ---------- root app ---------- */
+/* -------- root app -------- */
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -1424,7 +1426,11 @@ export default function App() {
   const [filterNetworkId, setFilterNetworkId] = useState("");
   const [filterManagerId, setFilterManagerId] = useState("");
 
-  const filters = { teamId: filterTeamId, networkId: filterNetworkId, managerId: filterManagerId };
+  const filters = {
+    teamId: filterTeamId,
+    networkId: filterNetworkId,
+    managerId: filterManagerId
+  };
 
   const {
     summary,
@@ -1478,6 +1484,12 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const handleLoggedIn = (u) => {
+    setUser(u);
+    reloadDashboard();
+    loadMasterData(u);
+  };
+
   const handleLogout = () => {
     localStorage.removeItem("yt_token");
     localStorage.removeItem("yt_user");
@@ -1517,27 +1529,14 @@ export default function App() {
   };
 
   if (!user) {
-    return (
-      <Login
-        onLoggedIn={(u) => {
-          setUser(u);
-          reloadDashboard();
-          loadMasterData(u);
-        }}
-      />
-    );
+    return <Login onLoggedIn={handleLoggedIn} />;
   }
 
   const isAdmin = user.role === "admin";
 
   return (
     <div className="app-container">
-      <TopBar
-        user={user}
-        onLogout={handleLogout}
-        currentTab={tab}
-        setTab={setTab}
-      />
+      <TopBar user={user} onLogout={handleLogout} tab={tab} setTab={setTab} />
       {globalError && <div className="card error">Lỗi: {globalError}</div>}
 
       {tab === "dashboard" && (

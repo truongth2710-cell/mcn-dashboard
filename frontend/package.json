@@ -1,6 +1,6 @@
 {
-  "name": "sunmedia-yt-network-frontend",
-  "version": "2.0.0",
+  "name": "sunmedia-frontend",
+  "version": "1.0.0",
   "private": true,
   "scripts": {
     "dev": "vite",
@@ -8,11 +8,12 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "recharts": "^2.12.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.0.0",
-    "vite": "^5.0.0"
+    "vite": "^5.0.0",
+    "@vitejs/plugin-react": "^4.0.0"
   }
 }
