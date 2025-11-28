@@ -1,4 +1,3 @@
-// backend/src/routes/channelRoutes.js
 import express from "express";
 import { pool } from "../db.js";
 import { authMiddleware, requireRole } from "../auth.js";
@@ -6,10 +5,7 @@ import { authMiddleware, requireRole } from "../auth.js";
 const router = express.Router();
 
 /**
- * Lấy danh sách kênh cho tab Kênh:
- * - Nếu admin: toàn bộ kênh active
- * - Nếu không: chỉ kênh user đó được gán (staff_channels)
- * - Có kèm Network / Team / Manager (từ staff_channels role = 'manager')
+ * List channels with meta info (used for admin screens).
  */
 router.get("/", authMiddleware, async (req, res) => {
   try {
@@ -41,7 +37,6 @@ router.get("/", authMiddleware, async (req, res) => {
         `
       );
     } else {
-      // chỉ kênh user đó được gán (bất kỳ role)
       result = await pool.query(
         `
         SELECT
@@ -78,9 +73,7 @@ router.get("/", authMiddleware, async (req, res) => {
 });
 
 /**
- * Cập nhật metadata kênh:
- * - name, network_id, team_id, status
- * - manager_id: được lưu trong bảng staff_channels (role = 'manager')
+ * Update channel meta: name/network/team/status + manager (via staff_channels).
  */
 router.put("/:id", authMiddleware, requireRole("admin"), async (req, res) => {
   const client = await pool.connect();
@@ -91,12 +84,11 @@ router.put("/:id", authMiddleware, requireRole("admin"), async (req, res) => {
       network_id,
       team_id,
       status,
-      manager_id // có thể undefined / null / number
+      manager_id
     } = req.body;
 
     await client.query("BEGIN");
 
-    // update thông tin chính của kênh (KHÔNG đụng cột manager_id vì ta dùng staff_channels)
     const updateRes = await client.query(
       `
       UPDATE channels
@@ -122,14 +114,8 @@ router.put("/:id", authMiddleware, requireRole("admin"), async (req, res) => {
       return res.status(404).json({ error: "Channel not found" });
     }
 
-    // Xử lý manager nếu body có field manager_id
-    const hasManagerField = Object.prototype.hasOwnProperty.call(
-      req.body,
-      "manager_id"
-    );
-
-    if (hasManagerField) {
-      // Xoá manager cũ
+    // if manager_id is present in body, update staff_channels mapping
+    if (Object.prototype.hasOwnProperty.call(req.body, "manager_id")) {
       await client.query(
         `
         DELETE FROM staff_channels
@@ -138,7 +124,6 @@ router.put("/:id", authMiddleware, requireRole("admin"), async (req, res) => {
         [id]
       );
 
-      // Ghi manager mới nếu có
       if (manager_id) {
         await client.query(
           `
@@ -153,7 +138,6 @@ router.put("/:id", authMiddleware, requireRole("admin"), async (req, res) => {
     }
 
     await client.query("COMMIT");
-
     res.json(updateRes.rows[0]);
   } catch (err) {
     await client.query("ROLLBACK");
@@ -165,7 +149,7 @@ router.put("/:id", authMiddleware, requireRole("admin"), async (req, res) => {
 });
 
 /**
- * Gán kênh cho nhân sự với role bất kỳ (manager/editor…) – dùng cho tab Nhân sự nếu cần.
+ * Assign channel to staff with arbitrary role (manager/editor...).
  */
 router.post("/assign", authMiddleware, requireRole("admin"), async (req, res) => {
   try {
@@ -190,7 +174,7 @@ router.post("/assign", authMiddleware, requireRole("admin"), async (req, res) =>
 });
 
 /**
- * Xoá kênh (soft delete: status = 'deleted')
+ * Soft delete channel for admin.
  */
 router.delete("/:id", authMiddleware, requireRole("admin"), async (req, res) => {
   try {

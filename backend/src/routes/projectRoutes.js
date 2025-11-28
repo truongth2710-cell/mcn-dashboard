@@ -4,11 +4,15 @@ import { authMiddleware, requireRole } from "../auth.js";
 
 const router = express.Router();
 
-// List projects
+// list projects
 router.get("/", authMiddleware, async (req, res) => {
   try {
     const result = await pool.query(
-      "SELECT id, name, description, start_date, end_date FROM projects ORDER BY name ASC"
+      `
+      SELECT id, name, description, start_date, end_date
+      FROM projects
+      ORDER BY id DESC;
+      `
     );
     res.json(result.rows);
   } catch (err) {
@@ -17,11 +21,10 @@ router.get("/", authMiddleware, async (req, res) => {
   }
 });
 
-// Create project
+// create project (admin)
 router.post("/", authMiddleware, requireRole("admin"), async (req, res) => {
   try {
     const { name, description, start_date, end_date } = req.body;
-    if (!name) return res.status(400).json({ error: "name required" });
     const result = await pool.query(
       `
       INSERT INTO projects (name, description, start_date, end_date)
@@ -37,7 +40,35 @@ router.post("/", authMiddleware, requireRole("admin"), async (req, res) => {
   }
 });
 
+// update project (admin)
+router.put("/:id", authMiddleware, requireRole("admin"), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const { name, description, start_date, end_date } = req.body;
+    const result = await pool.query(
+      `
+      UPDATE projects
+      SET
+        name        = COALESCE($1, name),
+        description = COALESCE($2, description),
+        start_date  = COALESCE($3, start_date),
+        end_date    = COALESCE($4, end_date)
+      WHERE id = $5
+      RETURNING *;
+      `,
+      [name || null, description || null, start_date || null, end_date || null, id]
+    );
+    if (!result.rows.length) {
+      return res.status(404).json({ error: "Project not found" });
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Update project error:", err);
+    res.status(500).json({ error: "DB error" });
+  }
+});
 
+// delete project (admin)
 router.delete("/:id", authMiddleware, requireRole("admin"), async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -48,6 +79,5 @@ router.delete("/:id", authMiddleware, requireRole("admin"), async (req, res) => 
     res.status(500).json({ error: "DB error" });
   }
 });
-
 
 export default router;
