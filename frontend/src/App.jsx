@@ -1,12 +1,16 @@
-// frontend/src/App.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
+
+/* ---------- helpers ---------- */
 
 function formatNumber(n) {
   return (n || 0).toLocaleString("en-US");
 }
 
-function useDashboardData(from, to) {
+/**
+ * Hook load dữ liệu dashboard theo khoảng ngày + filter nâng cao.
+ */
+function useDashboardData(from, to, filters) {
   const [summary, setSummary] = useState(null);
   const [channels, setChannels] = useState([]);
   const [teamSummary, setTeamSummary] = useState([]);
@@ -15,11 +19,21 @@ function useDashboardData(from, to) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  const load = async () => {
+  const buildQueryString = () => {
+    const parts = [];
+    if (from) parts.push(`from=${from}`);
+    if (to) parts.push(`to=${to}`);
+    if (filters?.teamId) parts.push(`teamId=${filters.teamId}`);
+    if (filters?.networkId) parts.push(`networkId=${filters.networkId}`);
+    if (filters?.managerId) parts.push(`managerId=${filters.managerId}`);
+    return parts.length ? "?" + parts.join("&") : "";
+  };
+
+  const reload = async () => {
     try {
       setLoading(true);
       setError(null);
-      const qs = `?from=${from}&to=${to}`;
+      const qs = buildQueryString();
       const [s, c, ts, ns, ps] = await Promise.all([
         api("/dashboard/summary" + qs),
         api("/dashboard/channels" + qs),
@@ -33,7 +47,7 @@ function useDashboardData(from, to) {
       setNetworkSummary(ns);
       setProjectSummary(ps);
     } catch (e) {
-      setError(e.message);
+      setError(e.message || "Dashboard load error");
     } finally {
       setLoading(false);
     }
@@ -47,9 +61,11 @@ function useDashboardData(from, to) {
     projectSummary,
     loading,
     error,
-    reload: load
+    reload
   };
 }
+
+/* ---------- auth / layout ---------- */
 
 function Login({ onLoggedIn }) {
   const [email, setEmail] = useState("");
@@ -68,7 +84,7 @@ function Login({ onLoggedIn }) {
       localStorage.setItem("yt_user", JSON.stringify(res.user));
       onLoggedIn(res.user);
     } catch (e) {
-      setError(e.message);
+      setError(e.message || "Login error");
     }
   };
 
@@ -83,14 +99,14 @@ function Login({ onLoggedIn }) {
       localStorage.setItem("yt_user", JSON.stringify(res.user));
       onLoggedIn(res.user);
     } catch (e) {
-      setError(e.message);
+      setError(e.message || "Register error");
     }
   };
 
   return (
     <div className="full-center">
       <div className="card login-card">
-        <h2>Đăng nhập / Đăng ký</h2>
+        <h2 style={{ marginBottom: 16 }}>Đăng nhập / Đăng ký</h2>
         <div className="form-grid">
           <input
             type="email"
@@ -161,7 +177,54 @@ function TopBar({ user, onLogout, currentTab, setTab }) {
   );
 }
 
-/* ---------------- DASHBOARD ---------------- */
+/* ---------- generic components ---------- */
+
+function SimpleListCard({ title, items, columns, emptyLabel = "Chưa có dữ liệu" }) {
+  return (
+    <div className="card">
+      <div className="flex-between card-header">
+        <div className="card-title">{title}</div>
+        <span className="badge">{items.length}</span>
+      </div>
+      <table className="table">
+        <thead>
+          <tr>
+            {columns.map((c) => (
+              <th key={c.key}>{c.label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((row) => (
+            <tr key={row.id || row[columns[0].key]}>
+              {columns.map((c) => (
+                <td
+                  key={c.key}
+                  className={c.align === "right" ? "ta-right" : undefined}
+                >
+                  {c.render
+                    ? c.render(row[c.key], row)
+                    : c.format
+                    ? c.format(row[c.key], row)
+                    : row[c.key]}
+                </td>
+              ))}
+            </tr>
+          ))}
+          {!items.length && (
+            <tr>
+              <td colSpan={columns.length} style={{ textAlign: "center", padding: 12 }}>
+                {emptyLabel}
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ---------- dashboard ---------- */
 
 function SummaryCards({ summary }) {
   return (
@@ -191,192 +254,6 @@ function SummaryCards({ summary }) {
   );
 }
 
-function ChannelsTable({
-  channels,
-  showConnectButton,
-  isAdmin,
-  staffOptions,
-  teamOptions,
-  networkOptions,
-  onUpdateChannelMeta
-}) {
-  const [search, setSearch] = useState("");
-
-  const filtered = useMemo(() => {
-    if (!search) return channels;
-    const s = search.toLowerCase();
-    return channels.filter(
-      (ch) =>
-        ch.name?.toLowerCase().includes(s) ||
-        ch.youtube_channel_id?.toLowerCase().includes(s)
-    );
-  }, [channels, search]);
-
-  const handleConnect = async () => {
-    try {
-      const res = await api("/youtube/connect-url");
-      window.location.href = res.url;
-    } catch (e) {
-      alert("Không lấy được link kết nối: " + e.message);
-    }
-  };
-
-  const handleMetaChange = (ch, field, value) => {
-    if (!onUpdateChannelMeta) return;
-    onUpdateChannelMeta({
-      ...ch,
-      [field]: value ? Number(value) : null
-    });
-  };
-
-  return (
-    <div className="card">
-      <div className="flex-between card-header">
-        <div className="card-title">Kênh</div>
-        <div className="flex gap-8 align-center">
-          <input
-            className="search-input"
-            placeholder="Tìm theo tên kênh / ID..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          {showConnectButton && (
-            <button onClick={handleConnect}>Kết nối kênh YouTube</button>
-          )}
-          <span className="badge">{channels.length} kênh</span>
-        </div>
-      </div>
-      <table className="table">
-        <thead>
-          <tr>
-            <th style={{ width: "26%" }}>Kênh</th>
-            <th>YouTube ID</th>
-            <th>Network</th>
-            <th>Team</th>
-            <th>Manager</th>
-            <th className="ta-right">Views</th>
-            <th className="ta-right">Revenue</th>
-            <th className="ta-right">RPM</th>
-          </tr>
-        </thead>
-        <tbody>
-          {filtered.map((ch) => (
-            <tr key={ch.channel_id || ch.id}>
-              <td>{ch.name}</td>
-              <td>{ch.youtube_channel_id}</td>
-              <td>
-                {isAdmin && networkOptions?.length ? (
-                  <select
-                    value={ch.network_id || ""}
-                    onChange={(e) =>
-                      handleMetaChange(ch, "network_id", e.target.value)
-                    }
-                  >
-                    <option value="">(none)</option>
-                    {networkOptions.map((n) => (
-                      <option key={n.id} value={n.id}>
-                        {n.name}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  ch.network_name || "-"
-                )}
-              </td>
-              <td>
-                {isAdmin && teamOptions?.length ? (
-                  <select
-                    value={ch.team_id || ""}
-                    onChange={(e) =>
-                      handleMetaChange(ch, "team_id", e.target.value)
-                    }
-                  >
-                    <option value="">(none)</option>
-                    {teamOptions.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.name}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  ch.team_name || "-"
-                )}
-              </td>
-              <td>
-                {isAdmin && staffOptions?.length ? (
-                  <select
-                    value={ch.manager_id || ""}
-                    onChange={(e) =>
-                      handleMetaChange(ch, "manager_id", e.target.value)
-                    }
-                  >
-                    <option value="">(none)</option>
-                    {staffOptions.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  ch.manager_name || "-"
-                )}
-              </td>
-              <td className="ta-right">{formatNumber(ch.views)}</td>
-              <td className="ta-right">{formatNumber(ch.revenue)}</td>
-              <td className="ta-right">{(ch.rpm || 0).toFixed(2)}</td>
-            </tr>
-          ))}
-          {!filtered.length && (
-            <tr>
-              <td colSpan={8} style={{ textAlign: "center", padding: "16px" }}>
-                Chưa có kênh nào.
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function SimpleListCard({ title, items, columns, emptyLabel = "Chưa có dữ liệu" }) {
-  return (
-    <div className="card">
-      <div className="flex-between card-header">
-        <div className="card-title">{title}</div>
-        <span className="badge">{items.length}</span>
-      </div>
-      <table className="table">
-        <thead>
-          <tr>
-            {columns.map((c) => (
-              <th key={c.key}>{c.label}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((row) => (
-            <tr key={row.id || row[columns[0].key]}>
-              {columns.map((c) => (
-                <td key={c.key} className={c.align === "right" ? "ta-right" : ""}>
-                  {c.format ? c.format(row[c.key], row) : row[c.key]}
-                </td>
-              ))}
-            </tr>
-          ))}
-          {!items.length && (
-            <tr>
-              <td colSpan={columns.length} style={{ textAlign: "center", padding: 12 }}>
-                {emptyLabel}
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 function DashboardTab({
   summary,
   channels,
@@ -387,7 +264,17 @@ function DashboardTab({
   to,
   setFrom,
   setTo,
+  filterTeamId,
+  setFilterTeamId,
+  filterNetworkId,
+  setFilterNetworkId,
+  filterManagerId,
+  setFilterManagerId,
+  staff,
+  teams,
+  networks,
   loading,
+  error,
   reload
 }) {
   return (
@@ -402,13 +289,59 @@ function DashboardTab({
           />
           <span>→</span>
           <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+        </div>
+
+        <div className="filter-group">
+          <select
+            value={filterTeamId}
+            onChange={(e) => setFilterTeamId(e.target.value)}
+          >
+            <option value="">Tất cả team</option>
+            {teams.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+          <select
+            value={filterNetworkId}
+            onChange={(e) => setFilterNetworkId(e.target.value)}
+          >
+            <option value="">Tất cả network</option>
+            {networks.map((n) => (
+              <option key={n.id} value={n.id}>
+                {n.name}
+              </option>
+            ))}
+          </select>
+          <select
+            value={filterManagerId}
+            onChange={(e) => setFilterManagerId(e.target.value)}
+          >
+            <option value="">Tất cả manager</option>
+            {staff.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </select>
           <button onClick={reload}>Cập nhật</button>
         </div>
-        {loading && <span className="muted">Đang tải dữ liệu...</span>}
+
+        <div>
+          {loading && <span className="muted">Đang tải dữ liệu...</span>}
+          {error && <span className="error-inline">Lỗi: {error}</span>}
+        </div>
       </div>
 
       <SummaryCards summary={summary} />
-      <ChannelsTable channels={channels} showConnectButton={false} />
+
+      <ChannelsTable
+        title="Kênh (trong dashboard)"
+        channels={channels}
+        showConnectButton={false}
+        isAdmin={false}
+      />
 
       <div className="grid grid-3">
         <SimpleListCard
@@ -417,7 +350,12 @@ function DashboardTab({
           columns={[
             { key: "team_name", label: "Team" },
             { key: "views", label: "Views", align: "right", format: formatNumber },
-            { key: "revenue", label: "Revenue", align: "right", format: formatNumber }
+            {
+              key: "revenue",
+              label: "Revenue",
+              align: "right",
+              format: formatNumber
+            }
           ]}
         />
         <SimpleListCard
@@ -426,7 +364,12 @@ function DashboardTab({
           columns={[
             { key: "network_name", label: "Network" },
             { key: "views", label: "Views", align: "right", format: formatNumber },
-            { key: "revenue", label: "Revenue", align: "right", format: formatNumber }
+            {
+              key: "revenue",
+              label: "Revenue",
+              align: "right",
+              format: formatNumber
+            }
           ]}
         />
         <SimpleListCard
@@ -435,7 +378,12 @@ function DashboardTab({
           columns={[
             { key: "project_name", label: "Dự án" },
             { key: "views", label: "Views", align: "right", format: formatNumber },
-            { key: "revenue", label: "Revenue", align: "right", format: formatNumber }
+            {
+              key: "revenue",
+              label: "Revenue",
+              align: "right",
+              format: formatNumber
+            }
           ]}
         />
       </div>
@@ -443,20 +391,239 @@ function DashboardTab({
   );
 }
 
-/* ---------------- MANAGEMENT TABS ---------------- */
+/* ---------- channels tab ---------- */
 
-function StaffTab({ staff, isAdmin }) {
+function ChannelsTable({
+  title = "Kênh",
+  channels,
+  showConnectButton,
+  isAdmin,
+  staffOptions = [],
+  teamOptions = [],
+  networkOptions = [],
+  onUpdateChannelMeta,
+  onDelete
+}) {
+  const [search, setSearch] = useState("");
+  const [filterTeamId, setFilterTeamId] = useState("");
+  const [filterNetworkId, setFilterNetworkId] = useState("");
+  const [filterManagerId, setFilterManagerId] = useState("");
+
+  const filtered = useMemo(() => {
+    let list = channels || [];
+    if (search) {
+      const s = search.toLowerCase();
+      list = list.filter(
+        (ch) =>
+          ch.name?.toLowerCase().includes(s) ||
+          ch.youtube_channel_id?.toLowerCase().includes(s)
+      );
+    }
+    if (filterTeamId) {
+      list = list.filter((ch) => String(ch.team_id || "") === String(filterTeamId));
+    }
+    if (filterNetworkId) {
+      list = list.filter(
+        (ch) => String(ch.network_id || "") === String(filterNetworkId)
+      );
+    }
+    if (filterManagerId) {
+      list = list.filter(
+        (ch) => String(ch.manager_id || "") === String(filterManagerId)
+      );
+    }
+    return list;
+  }, [channels, search, filterTeamId, filterNetworkId, filterManagerId]);
+
+  const handleConnect = async () => {
+    try {
+      const res = await api("/youtube/connect-url");
+      window.location.href = res.url;
+    } catch (e) {
+      alert("Không lấy được link kết nối: " + e.message);
+    }
+  };
+
+  const handleMetaChange = (ch, field, value) => {
+    if (!onUpdateChannelMeta) return;
+    const parsedValue = value ? Number(value) : null;
+    onUpdateChannelMeta({
+      ...ch,
+      [field]: parsedValue
+    });
+  };
+
+  return (
+    <div className="card">
+      <div className="flex-between card-header">
+        <div className="card-title">{title}</div>
+        <div className="flex gap-8 align-center">
+          <input
+            className="search-input"
+            placeholder="Tìm theo tên kênh / ID..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <select
+            value={filterTeamId}
+            onChange={(e) => setFilterTeamId(e.target.value)}
+          >
+            <option value="">All team</option>
+            {teamOptions.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+          <select
+            value={filterNetworkId}
+            onChange={(e) => setFilterNetworkId(e.target.value)}
+          >
+            <option value="">All network</option>
+            {networkOptions.map((n) => (
+              <option key={n.id} value={n.id}>
+                {n.name}
+              </option>
+            ))}
+          </select>
+          <select
+            value={filterManagerId}
+            onChange={(e) => setFilterManagerId(e.target.value)}
+          >
+            <option value="">All manager</option>
+            {staffOptions.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+          {showConnectButton && (
+            <button onClick={handleConnect}>Kết nối kênh YouTube</button>
+          )}
+          <span className="badge">{channels?.length || 0} kênh</span>
+        </div>
+      </div>
+      <table className="table">
+        <thead>
+          <tr>
+            <th style={{ width: "26%" }}>Kênh</th>
+            <th>YouTube ID</th>
+            <th>Network</th>
+            <th>Team</th>
+            <th>Manager</th>
+            <th className="ta-right">Views</th>
+            <th className="ta-right">Revenue</th>
+            <th className="ta-right">RPM</th>
+            {isAdmin && <th></th>}
+          </tr>
+        </thead>
+        <tbody>
+          {filtered.map((ch) => {
+            const rowId = ch.channel_id || ch.id;
+            return (
+              <tr key={rowId}>
+                <td>{ch.name}</td>
+                <td>{ch.youtube_channel_id}</td>
+                <td>
+                  {isAdmin && networkOptions.length ? (
+                    <select
+                      value={ch.network_id || ""}
+                      onChange={(e) =>
+                        handleMetaChange(ch, "network_id", e.target.value)
+                      }
+                    >
+                      <option value="">(none)</option>
+                      {networkOptions.map((n) => (
+                        <option key={n.id} value={n.id}>
+                          {n.name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    ch.network_name || "-"
+                  )}
+                </td>
+                <td>
+                  {isAdmin && teamOptions.length ? (
+                    <select
+                      value={ch.team_id || ""}
+                      onChange={(e) =>
+                        handleMetaChange(ch, "team_id", e.target.value)
+                      }
+                    >
+                      <option value="">(none)</option>
+                      {teamOptions.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    ch.team_name || "-"
+                  )}
+                </td>
+                <td>
+                  {isAdmin && staffOptions.length ? (
+                    <select
+                      value={ch.manager_id || ""}
+                      onChange={(e) =>
+                        handleMetaChange(ch, "manager_id", e.target.value)
+                      }
+                    >
+                      <option value="">(none)</option>
+                      {staffOptions.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    ch.manager_name || "-"
+                  )}
+                </td>
+                <td className="ta-right">{formatNumber(ch.views)}</td>
+                <td className="ta-right">{formatNumber(ch.revenue)}</td>
+                <td className="ta-right">{(ch.rpm || 0).toFixed(2)}</td>
+                {isAdmin && (
+                  <td className="ta-right">
+                    <button
+                      className="danger small"
+                      onClick={() => onDelete && onDelete(ch)}
+                    >
+                      Xóa
+                    </button>
+                  </td>
+                )}
+              </tr>
+            );
+          })}
+          {!filtered.length && (
+            <tr>
+              <td colSpan={isAdmin ? 9 : 8} style={{ textAlign: "center", padding: 16 }}>
+                Chưa có kênh nào.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ---------- staff / teams / networks / projects tabs ---------- */
+
+function StaffTab({ staff, isAdmin, reloadMaster }) {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState("viewer");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+  const [err, setErr] = useState(null);
 
   const createStaff = async () => {
     if (!email || !password) return;
     setLoading(true);
-    setError(null);
+    setErr(null);
     try {
       await api("/auth/register", {
         method: "POST",
@@ -466,12 +633,21 @@ function StaffTab({ staff, isAdmin }) {
       setName("");
       setPassword("");
       setRole("viewer");
-      // không tự reload, để admin F5 / load lại app hoặc bạn có thể thêm hook riêng
-      alert("Tạo nhân sự thành công. Người đó có thể đăng nhập bằng email/mật khẩu bạn vừa tạo.");
+      await reloadMaster();
     } catch (e) {
-      setError(e.message);
+      setErr(e.message || "Create staff error");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const deleteStaff = async (s) => {
+    if (!window.confirm(`Xóa nhân sự "${s.name}"?`)) return;
+    try {
+      await api(`/staff/${s.id}`, { method: "DELETE" });
+      await reloadMaster();
+    } catch (e) {
+      alert("Lỗi xóa nhân sự: " + e.message);
     }
   };
 
@@ -506,27 +682,59 @@ function StaffTab({ staff, isAdmin }) {
               <button disabled={loading} onClick={createStaff}>
                 Tạo nhân sự
               </button>
-              {error && <span className="error-inline">{error}</span>}
+              {err && <span className="error-inline">{err}</span>}
             </div>
           </div>
         </div>
       )}
 
-      <SimpleListCard
-        title="Danh sách nhân sự"
-        items={staff}
-        columns={[
-          { key: "name", label: "Tên" },
-          { key: "email", label: "Email" },
-          { key: "role", label: "Role" }
-        ]}
-        emptyLabel="Chưa có nhân sự nào."
-      />
+      <div className="card">
+        <div className="flex-between card-header">
+          <div className="card-title">Danh sách nhân sự</div>
+          <span className="badge">{staff.length}</span>
+        </div>
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Tên</th>
+              <th>Email</th>
+              <th>Role</th>
+              {isAdmin && <th></th>}
+            </tr>
+          </thead>
+          <tbody>
+            {staff.map((s) => (
+              <tr key={s.id}>
+                <td>{s.name}</td>
+                <td>{s.email}</td>
+                <td>{s.role}</td>
+                {isAdmin && (
+                  <td className="ta-right">
+                    <button
+                      className="danger small"
+                      onClick={() => deleteStaff(s)}
+                    >
+                      Xóa
+                    </button>
+                  </td>
+                )}
+              </tr>
+            ))}
+            {!staff.length && (
+              <tr>
+                <td colSpan={isAdmin ? 4 : 3} style={{ textAlign: "center", padding: 12 }}>
+                  Chưa có nhân sự nào.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </>
   );
 }
 
-function TeamsTab({ teams, reload }) {
+function TeamsTab({ teams, reloadMaster }) {
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [loading, setLoading] = useState(false);
@@ -541,11 +749,21 @@ function TeamsTab({ teams, reload }) {
       });
       setName("");
       setDesc("");
-      reload && reload();
+      await reloadMaster();
     } catch (e) {
       alert("Lỗi tạo team: " + e.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const del = async (t) => {
+    if (!window.confirm(`Xóa team "${t.name}"?`)) return;
+    try {
+      await api(`/teams/${t.id}`, { method: "DELETE" });
+      await reloadMaster();
+    } catch (e) {
+      alert("Lỗi xóa team: " + e.message);
     }
   };
 
@@ -572,19 +790,46 @@ function TeamsTab({ teams, reload }) {
         </div>
       </div>
 
-      <SimpleListCard
-        title="Danh sách Team"
-        items={teams}
-        columns={[
-          { key: "name", label: "Tên team" },
-          { key: "description", label: "Mô tả" }
-        ]}
-      />
+      <div className="card">
+        <div className="flex-between card-header">
+          <div className="card-title">Danh sách Team</div>
+          <span className="badge">{teams.length}</span>
+        </div>
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Tên team</th>
+              <th>Mô tả</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {teams.map((t) => (
+              <tr key={t.id}>
+                <td>{t.name}</td>
+                <td>{t.description}</td>
+                <td className="ta-right">
+                  <button className="danger small" onClick={() => del(t)}>
+                    Xóa
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {!teams.length && (
+              <tr>
+                <td colSpan={3} style={{ textAlign: "center", padding: 12 }}>
+                  Chưa có team nào.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </>
   );
 }
 
-function NetworksTab({ networks, reload }) {
+function NetworksTab({ networks, reloadMaster }) {
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [loading, setLoading] = useState(false);
@@ -599,11 +844,21 @@ function NetworksTab({ networks, reload }) {
       });
       setName("");
       setDesc("");
-      reload && reload();
+      await reloadMaster();
     } catch (e) {
       alert("Lỗi tạo network: " + e.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const del = async (n) => {
+    if (!window.confirm(`Xóa network "${n.name}"?`)) return;
+    try {
+      await api(`/networks/${n.id}`, { method: "DELETE" });
+      await reloadMaster();
+    } catch (e) {
+      alert("Lỗi xóa network: " + e.message);
     }
   };
 
@@ -630,19 +885,46 @@ function NetworksTab({ networks, reload }) {
         </div>
       </div>
 
-      <SimpleListCard
-        title="Danh sách Network"
-        items={networks}
-        columns={[
-          { key: "name", label: "Tên" },
-          { key: "description", label: "Mô tả" }
-        ]}
-      />
+      <div className="card">
+        <div className="flex-between card-header">
+          <div className="card-title">Danh sách Network</div>
+          <span className="badge">{networks.length}</span>
+        </div>
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Tên</th>
+              <th>Mô tả</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {networks.map((n) => (
+              <tr key={n.id}>
+                <td>{n.name}</td>
+                <td>{n.description}</td>
+                <td className="ta-right">
+                  <button className="danger small" onClick={() => del(n)}>
+                    Xóa
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {!networks.length && (
+              <tr>
+                <td colSpan={3} style={{ textAlign: "center", padding: 12 }}>
+                  Chưa có network nào.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </>
   );
 }
 
-function ProjectsTab({ projects, reload }) {
+function ProjectsTab({ projects, reloadMaster }) {
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [startDate, setStartDate] = useState("");
@@ -666,11 +948,21 @@ function ProjectsTab({ projects, reload }) {
       setDesc("");
       setStartDate("");
       setEndDate("");
-      reload && reload();
+      await reloadMaster();
     } catch (e) {
       alert("Lỗi tạo dự án: " + e.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const del = async (p) => {
+    if (!window.confirm(`Xóa dự án "${p.name}"?`)) return;
+    try {
+      await api(`/projects/${p.id}`, { method: "DELETE" });
+      await reloadMaster();
+    } catch (e) {
+      alert("Lỗi xóa dự án: " + e.message);
     }
   };
 
@@ -709,27 +1001,56 @@ function ProjectsTab({ projects, reload }) {
         </div>
       </div>
 
-      <SimpleListCard
-        title="Danh sách Dự án"
-        items={projects}
-        columns={[
-          { key: "name", label: "Tên" },
-          { key: "description", label: "Mô tả" },
-          { key: "start_date", label: "Bắt đầu" },
-          { key: "end_date", label: "Kết thúc" }
-        ]}
-      />
+      <div className="card">
+        <div className="flex-between card-header">
+          <div className="card-title">Danh sách Dự án</div>
+          <span className="badge">{projects.length}</span>
+        </div>
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Tên</th>
+              <th>Mô tả</th>
+              <th>Bắt đầu</th>
+              <th>Kết thúc</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {projects.map((p) => (
+              <tr key={p.id}>
+                <td>{p.name}</td>
+                <td>{p.description}</td>
+                <td>{p.start_date}</td>
+                <td>{p.end_date}</td>
+                <td className="ta-right">
+                  <button className="danger small" onClick={() => del(p)}>
+                    Xóa
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {!projects.length && (
+              <tr>
+                <td colSpan={5} style={{ textAlign: "center", padding: 12 }}>
+                  Chưa có dự án nào.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </>
   );
 }
 
-/* ---------------- ROOT APP ---------------- */
+/* ---------- root app ---------- */
 
 export default function App() {
   const [user, setUser] = useState(null);
   const [tab, setTab] = useState("dashboard");
 
-  // khoảng ngày dashboard
+  // default date range = 30 ngày gần nhất
   const today = new Date();
   const defaultTo = today.toISOString().slice(0, 10);
   const defaultFrom = new Date(today.getTime() - 30 * 86400000)
@@ -738,6 +1059,10 @@ export default function App() {
 
   const [from, setFrom] = useState(defaultFrom);
   const [to, setTo] = useState(defaultTo);
+
+  const [filterTeamId, setFilterTeamId] = useState("");
+  const [filterNetworkId, setFilterNetworkId] = useState("");
+  const [filterManagerId, setFilterManagerId] = useState("");
 
   const {
     summary,
@@ -748,7 +1073,11 @@ export default function App() {
     loading: dashboardLoading,
     error: dashboardError,
     reload: reloadDashboard
-  } = useDashboardData(from, to);
+  } = useDashboardData(from, to, {
+    teamId: filterTeamId,
+    networkId: filterNetworkId,
+    managerId: filterManagerId
+  });
 
   const [staff, setStaff] = useState([]);
   const [teams, setTeams] = useState([]);
@@ -759,8 +1088,9 @@ export default function App() {
   const loadMasterData = async (u) => {
     try {
       setGlobalError(null);
+      const staffPromise = u.role === "admin" ? api("/staff") : Promise.resolve([]);
       const [staffRes, teamRes, networkRes, projectRes] = await Promise.all([
-        u.role === "admin" ? api("/staff") : Promise.resolve([]),
+        staffPromise,
         api("/teams"),
         api("/networks"),
         api("/projects")
@@ -770,7 +1100,7 @@ export default function App() {
       setNetworks(networkRes || []);
       setProjects(projectRes || []);
     } catch (e) {
-      setGlobalError(e.message);
+      setGlobalError(e.message || "Load master data error");
     }
   };
 
@@ -797,7 +1127,8 @@ export default function App() {
 
   const handleUpdateChannelMeta = async (ch) => {
     try {
-      await api(`/channels/${ch.channel_id || ch.id}`, {
+      const id = ch.channel_id ?? ch.id;
+      await api(`/channels/${id}`, {
         method: "PUT",
         body: JSON.stringify({
           name: ch.name,
@@ -807,10 +1138,22 @@ export default function App() {
           status: ch.status
         })
       });
-      // reload lại dashboard để số summary theo team/network cập nhật
-      reloadDashboard();
+      await reloadDashboard();
+      await loadMasterData(user);
     } catch (e) {
       alert("Lỗi cập nhật kênh: " + e.message);
+    }
+  };
+
+  const handleDeleteChannel = async (ch) => {
+    if (!window.confirm(`Xóa kênh "${ch.name}"?`)) return;
+    try {
+      const id = ch.channel_id ?? ch.id;
+      await api(`/channels/${id}`, { method: "DELETE" });
+      await reloadDashboard();
+      await loadMasterData(user);
+    } catch (e) {
+      alert("Lỗi xóa kênh: " + e.message);
     }
   };
 
@@ -847,45 +1190,60 @@ export default function App() {
           to={to}
           setFrom={setFrom}
           setTo={setTo}
+          filterTeamId={filterTeamId}
+          setFilterTeamId={setFilterTeamId}
+          filterNetworkId={filterNetworkId}
+          setFilterNetworkId={setFilterNetworkId}
+          filterManagerId={filterManagerId}
+          setFilterManagerId={setFilterManagerId}
+          staff={staff}
+          teams={teams}
+          networks={networks}
           loading={dashboardLoading}
+          error={dashboardError}
           reload={reloadDashboard}
         />
       )}
 
       {tab === "channels" && (
         <ChannelsTable
+          title="Quản lý Kênh"
           channels={channels}
           showConnectButton={true}
           isAdmin={user.role === "admin"}
           staffOptions={staff}
           teamOptions={teams}
           networkOptions={networks}
-          onUpdateChannelMeta={user.role === "admin" ? handleUpdateChannelMeta : null}
+          onUpdateChannelMeta={
+            user.role === "admin" ? handleUpdateChannelMeta : undefined
+          }
+          onDelete={user.role === "admin" ? handleDeleteChannel : undefined}
         />
       )}
 
       {tab === "staff" && (
-        <StaffTab staff={staff} isAdmin={user.role === "admin"} />
+        <StaffTab
+          staff={staff}
+          isAdmin={user.role === "admin"}
+          reloadMaster={() => loadMasterData(user)}
+        />
       )}
 
       {tab === "teams" && (
-        <TeamsTab
-          teams={teams}
-          reload={() => loadMasterData(user)}
-        />
+        <TeamsTab teams={teams} reloadMaster={() => loadMasterData(user)} />
       )}
 
       {tab === "networks" && (
         <NetworksTab
           networks={networks}
-          reload={() => loadMasterData(user)}
+          reloadMaster={() => loadMasterData(user)}
         />
       )}
 
       {tab === "projects" && (
         <ProjectsTab
           projects={projects}
-          reload={() => loadMasterData(user)}
+          reloadMaster={() => loadMasterData(user)}
         />
       )}
     </div>
