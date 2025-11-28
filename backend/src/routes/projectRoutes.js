@@ -37,4 +37,17 @@ router.post("/", authMiddleware, requireRole("admin"), async (req, res) => {
   }
 });
 
+
+router.delete("/:id", authMiddleware, requireRole("admin"), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    await pool.query("DELETE FROM projects WHERE id = $1;", [id]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Delete project error:", err);
+    res.status(500).json({ error: "DB error" });
+  }
+});
+
+
 export default router;
