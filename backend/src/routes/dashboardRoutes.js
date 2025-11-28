@@ -1,23 +1,24 @@
+// backend/src/routes/dashboardRoutes.js
 import express from "express";
 import { pool } from "../db.js";
 import { authMiddleware } from "../auth.js";
 
 const router = express.Router();
 
-// helper build filter by date + team/network/manager
+/**
+ * Xây WHERE chung cho tất cả query dashboard.
+ * - Lọc theo ngày (from/to)
+ * - Theo team / network
+ * - Theo manager (dùng bảng staff_channels, KHÔNG cần cột manager_id trong channels)
+ * - Hạn chế kênh theo user (nếu không phải admin)
+ */
 function buildFilterClause(query, user) {
-  const {
-    from,
-    to,
-    teamId,
-    networkId,
-    managerId
-  } = query;
+  const { from, to, teamId, networkId, managerId } = query;
 
   const values = [];
   const whereParts = ["c.status = 'active'"];
 
-  // date range
+  // Khoảng ngày
   if (from) {
     values.push(from);
     whereParts.push(`d.date >= $${values.length}`);
@@ -27,22 +28,21 @@ function buildFilterClause(query, user) {
     whereParts.push(`d.date <= $${values.length}`);
   }
 
+  // Theo team
   if (teamId) {
     values.push(Number(teamId));
     whereParts.push(`c.team_id = $${values.length}`);
   }
+
+  // Theo network
   if (networkId) {
     values.push(Number(networkId));
     whereParts.push(`c.network_id = $${values.length}`);
   }
+
+  // Theo manager: dùng staff_channels (mapping kênh ↔ staff)
   if (managerId) {
     values.push(Number(managerId));
-    whereParts.push(`c.manager_id = $${values.length}`);
-  }
-
-  // hạn chế theo user nếu không phải admin
-  if (user.role !== "admin") {
-    values.push(user.id);
     whereParts.push(
       `EXISTS (
         SELECT 1 FROM staff_channels sc
@@ -51,11 +51,23 @@ function buildFilterClause(query, user) {
     );
   }
 
-  const whereSql = whereParts.length ? "WHERE " + whereParts.join(" AND ") : "";
+  // Nếu không phải admin → chỉ thấy kênh mình được gán
+  if (user.role !== "admin") {
+    values.push(user.id);
+    whereParts.push(
+      `EXISTS (
+        SELECT 1 FROM staff_channels sc2
+        WHERE sc2.channel_id = c.id AND sc2.staff_id = $${values.length}
+      )`
+    );
+  }
+
+  const whereSql = "WHERE " + whereParts.join(" AND ");
   return { whereSql, values };
 }
 
-// summary tổng
+/* -------- SUMMARY TỔNG -------- */
+
 router.get("/summary", authMiddleware, async (req, res) => {
   try {
     const user = req.user;
@@ -63,9 +75,9 @@ router.get("/summary", authMiddleware, async (req, res) => {
 
     const sql = `
       SELECT
-        COALESCE(SUM(d.views), 0) AS total_views,
-        COALESCE(SUM(d.revenue), 0) AS total_revenue,
-        COALESCE(SUM(d.watch_time_minutes), 0) AS total_watch_time,
+        COALESCE(SUM(d.views), 0)               AS total_views,
+        COALESCE(SUM(d.revenue), 0)             AS total_revenue,
+        COALESCE(SUM(d.watch_time_minutes), 0)  AS total_watch_time,
         CASE
           WHEN SUM(d.views) > 0
             THEN SUM(d.revenue) * 1000.0 / SUM(d.views)
@@ -75,8 +87,10 @@ router.get("/summary", authMiddleware, async (req, res) => {
       JOIN channels c ON c.id = d.channel_id
       ${whereSql};
     `;
+
     const result = await pool.query(sql, values);
     const row = result.rows[0] || {};
+
     res.json({
       totalViews: Number(row.total_views || 0),
       totalRevenue: Number(row.total_revenue || 0),
@@ -89,7 +103,8 @@ router.get("/summary", authMiddleware, async (req, res) => {
   }
 });
 
-// danh sách kênh + metrics
+/* -------- DANH SÁCH KÊNH + METRICS -------- */
+
 router.get("/channels", authMiddleware, async (req, res) => {
   try {
     const user = req.user;
@@ -102,12 +117,13 @@ router.get("/channels", authMiddleware, async (req, res) => {
         c.youtube_channel_id,
         c.network_id,
         c.team_id,
-        c.manager_id,
+        -- Không bắt buộc có c.manager_id, dùng mapping staff_channels cho filter nên để NULL cũng được
+        NULL::int AS manager_id,
         n.name AS network_name,
         t.name AS team_name,
-        m.name AS manager_name,
-        COALESCE(SUM(d.views), 0) AS views,
-        COALESCE(SUM(d.revenue), 0) AS revenue,
+        NULL::text AS manager_name,
+        COALESCE(SUM(d.views), 0)    AS views,
+        COALESCE(SUM(d.revenue), 0)  AS revenue,
         CASE
           WHEN SUM(d.views) > 0
             THEN SUM(d.revenue) * 1000.0 / SUM(d.views)
@@ -117,7 +133,6 @@ router.get("/channels", authMiddleware, async (req, res) => {
       LEFT JOIN channel_metrics_daily d ON d.channel_id = c.id
       LEFT JOIN networks n ON c.network_id = n.id
       LEFT JOIN teams t ON c.team_id = t.id
-      LEFT JOIN staff_users m ON c.manager_id = m.id
       ${whereSql}
       GROUP BY
         c.id,
@@ -125,12 +140,11 @@ router.get("/channels", authMiddleware, async (req, res) => {
         c.youtube_channel_id,
         c.network_id,
         c.team_id,
-        c.manager_id,
         n.name,
-        t.name,
-        m.name
+        t.name
       ORDER BY views DESC;
     `;
+
     const result = await pool.query(sql, values);
     res.json(result.rows);
   } catch (err) {
@@ -139,7 +153,8 @@ router.get("/channels", authMiddleware, async (req, res) => {
   }
 });
 
-// tổng theo team
+/* -------- TỔNG THEO TEAM -------- */
+
 router.get("/team-summary", authMiddleware, async (req, res) => {
   try {
     const user = req.user;
@@ -149,15 +164,16 @@ router.get("/team-summary", authMiddleware, async (req, res) => {
       SELECT
         t.id,
         t.name AS team_name,
-        COALESCE(SUM(d.views), 0) AS views,
+        COALESCE(SUM(d.views), 0)   AS views,
         COALESCE(SUM(d.revenue), 0) AS revenue
       FROM channels c
       JOIN teams t ON c.team_id = t.id
       LEFT JOIN channel_metrics_daily d ON d.channel_id = c.id
-      ${whereSql.replace("WHERE", "WHERE")} -- reuse filters
+      ${whereSql}
       GROUP BY t.id, t.name
       ORDER BY views DESC;
     `;
+
     const result = await pool.query(sql, values);
     res.json(result.rows);
   } catch (err) {
@@ -166,7 +182,8 @@ router.get("/team-summary", authMiddleware, async (req, res) => {
   }
 });
 
-// theo network
+/* -------- TỔNG THEO NETWORK -------- */
+
 router.get("/network-summary", authMiddleware, async (req, res) => {
   try {
     const user = req.user;
@@ -176,15 +193,16 @@ router.get("/network-summary", authMiddleware, async (req, res) => {
       SELECT
         n.id,
         n.name AS network_name,
-        COALESCE(SUM(d.views), 0) AS views,
+        COALESCE(SUM(d.views), 0)   AS views,
         COALESCE(SUM(d.revenue), 0) AS revenue
       FROM channels c
       JOIN networks n ON c.network_id = n.id
       LEFT JOIN channel_metrics_daily d ON d.channel_id = c.id
-      ${whereSql.replace("WHERE", "WHERE")}
+      ${whereSql}
       GROUP BY n.id, n.name
       ORDER BY views DESC;
     `;
+
     const result = await pool.query(sql, values);
     res.json(result.rows);
   } catch (err) {
@@ -193,31 +211,12 @@ router.get("/network-summary", authMiddleware, async (req, res) => {
   }
 });
 
-// theo project (nếu c.project_id tồn tại)
-router.get("/project-summary", authMiddleware, async (req, res) => {
-  try {
-    const user = req.user;
-    const { whereSql, values } = buildFilterClause(req.query, user);
+/* -------- THEO DỰ ÁN (TẠM THỜI TRẢ RỖNG) -------- */
 
-    const sql = `
-      SELECT
-        p.id,
-        p.name AS project_name,
-        COALESCE(SUM(d.views), 0) AS views,
-        COALESCE(SUM(d.revenue), 0) AS revenue
-      FROM channels c
-      JOIN projects p ON c.project_id = p.id
-      LEFT JOIN channel_metrics_daily d ON d.channel_id = c.id
-      ${whereSql.replace("WHERE", "WHERE")}
-      GROUP BY p.id, p.name
-      ORDER BY views DESC;
-    `;
-    const result = await pool.query(sql, values);
-    res.json(result.rows);
-  } catch (err) {
-    console.error("Project summary error:", err);
-    res.status(500).json({ error: "DB error" });
-  }
+router.get("/project-summary", authMiddleware, async (req, res) => {
+  // Chưa chắc chắn schema bảng projects + channels.project_id,
+  // nên tạm thời trả [] để frontend không bị lỗi.
+  res.json([]);
 });
 
 export default router;
