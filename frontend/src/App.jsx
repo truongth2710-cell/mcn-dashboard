@@ -583,7 +583,7 @@ function ChannelsTable({
                 </td>
                 <td className="ta-right">{formatNumber(ch.views)}</td>
                 <td className="ta-right">{formatNumber(ch.revenue)}</td>
-                <td className="ta-right">{rpmVal.toFixed(2)}</td>
+                <td className="ta-right">{Number(ch.rpm || 0).toFixed(2)}</td>
                 {isAdmin && (
                   <td className="ta-right">
                     <button
