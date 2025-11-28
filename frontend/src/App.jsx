@@ -1,10 +1,27 @@
 import React, { useEffect, useMemo, useState } from "react";
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+  CartesianGrid
+} from "recharts";
 import { api } from "./api";
 
 /* ---------- helpers ---------- */
 
 function formatNumber(n) {
   return (n || 0).toLocaleString("en-US");
+}
+
+function formatCurrency(n) {
+  return (n || 0).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  });
 }
 
 /**
@@ -63,6 +80,41 @@ function useDashboardData(from, to, filters) {
     error,
     reload
   };
+}
+
+/**
+ * Hook load timeseries doanh thu kênh để vẽ biểu đồ.
+ */
+function useChannelTimeseries(from, to, filters) {
+  const [series, setSeries] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const buildQueryString = () => {
+    const parts = [];
+    if (from) parts.push(`from=${from}`);
+    if (to) parts.push(`to=${to}`);
+    if (filters?.teamId) parts.push(`teamId=${filters.teamId}`);
+    if (filters?.networkId) parts.push(`networkId=${filters.networkId}`);
+    if (filters?.managerId) parts.push(`managerId=${filters.managerId}`);
+    return parts.length ? "?" + parts.join("&") : "";
+  };
+
+  const reload = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const qs = buildQueryString();
+      const data = await api("/dashboard/channel-timeseries" + qs);
+      setSeries(data || []);
+    } catch (e) {
+      setError(e.message || "Timeseries load error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return { series, loading, error, reload };
 }
 
 /* ---------- auth / layout ---------- */
@@ -236,12 +288,14 @@ function SummaryCards({ summary }) {
           <div className="value-lg">{formatNumber(summary?.totalViews)}</div>
         </div>
         <div className="kpi">
-          <div className="label">Tổng revenue</div>
-          <div className="value-lg">{formatNumber(summary?.totalRevenue)}</div>
+          <div className="label">Tổng doanh thu</div>
+          <div className="value-lg">{formatCurrency(summary?.totalRevenue)}</div>
         </div>
         <div className="kpi">
-          <div className="label">Watch time (phút)</div>
-          <div className="value-lg">{formatNumber(summary?.totalWatchTime)}</div>
+          <div className="label">Doanh thu Hoa Kỳ</div>
+          <div className="value-lg">
+            {formatCurrency(summary?.totalUsRevenue)}
+          </div>
         </div>
         <div className="kpi">
           <div className="label">RPM trung bình</div>
@@ -250,6 +304,81 @@ function SummaryCards({ summary }) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function ChannelChart({ from, to, filters }) {
+  const { series, loading, error, reload } = useChannelTimeseries(from, to, filters);
+
+  // build recharts data: mỗi ngày 1 object, mỗi channel 1 field `ch_${id}`
+  const { data, lines } = useMemo(() => {
+    const byDate = new Map();
+    const channelNames = new Map();
+
+    for (const row of series) {
+      const date = row.date;
+      const id = row.channel_id;
+      const key = `ch_${id}`;
+      channelNames.set(key, row.channel_name);
+      if (!byDate.has(date)) {
+        byDate.set(date, { date });
+      }
+      byDate.get(date)[key] = Number(row.revenue || 0);
+    }
+
+    const dataArr = Array.from(byDate.values()).sort((a, b) =>
+      a.date.localeCompare(b.date)
+    );
+    const keys = Array.from(channelNames.keys());
+    const linesArr = keys.map((key, idx) => ({
+      dataKey: key,
+      name: channelNames.get(key),
+      strokeIndex: idx
+    }));
+
+    return { data: dataArr, lines: linesArr };
+  }, [series]);
+
+  useEffect(() => {
+    reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [from, to, filters.teamId, filters.networkId, filters.managerId]);
+
+  return (
+    <div className="card">
+      <div className="flex-between card-header">
+        <div className="card-title">Doanh thu kênh (biểu đồ)</div>
+        <div>
+          {loading && <span className="muted">Đang tải...</span>}
+          {error && <span className="error-inline">Lỗi: {error}</span>}
+        </div>
+      </div>
+      {data.length === 0 ? (
+        <div style={{ padding: 16, textAlign: "center" }}>Chưa có dữ liệu.</div>
+      ) : (
+        <div style={{ width: "100%", height: 400 }}>
+          <ResponsiveContainer>
+            <LineChart data={data} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="date" />
+              <YAxis />
+              <Tooltip />
+              <Legend />
+              {lines.map((l) => (
+                <Line
+                  key={l.dataKey}
+                  type="monotone"
+                  dataKey={l.dataKey}
+                  name={l.name}
+                  dot={false}
+                  strokeWidth={2}
+                />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
     </div>
   );
 }
@@ -277,6 +406,8 @@ function DashboardTab({
   error,
   reload
 }) {
+  const filters = { teamId: filterTeamId, networkId: filterNetworkId, managerId: filterManagerId };
+
   return (
     <>
       <div className="card filter-bar">
@@ -343,6 +474,8 @@ function DashboardTab({
         isAdmin={false}
       />
 
+      <ChannelChart from={from} to={to} filters={filters} />
+
       <div className="grid grid-3">
         <SimpleListCard
           title="Theo Team"
@@ -354,7 +487,7 @@ function DashboardTab({
               key: "revenue",
               label: "Revenue",
               align: "right",
-              format: formatNumber
+              format: formatCurrency
             }
           ]}
         />
@@ -368,7 +501,7 @@ function DashboardTab({
               key: "revenue",
               label: "Revenue",
               align: "right",
-              format: formatNumber
+              format: formatCurrency
             }
           ]}
         />
@@ -382,7 +515,7 @@ function DashboardTab({
               key: "revenue",
               label: "Revenue",
               align: "right",
-              format: formatNumber
+              format: formatCurrency
             }
           ]}
         />
@@ -392,6 +525,20 @@ function DashboardTab({
 }
 
 /* ---------- channels tab ---------- */
+
+function ChannelAvatar({ name, avatar_url }) {
+  const initial = (name || "?")[0].toUpperCase();
+  if (avatar_url) {
+    return (
+      <img
+        src={avatar_url}
+        alt={name}
+        className="channel-avatar"
+      />
+    );
+  }
+  return <div className="channel-avatar placeholder">{initial}</div>;
+}
 
 function ChannelsTable({
   title = "Kênh",
@@ -453,6 +600,12 @@ function ChannelsTable({
     });
   };
 
+  const openChannel = (youtubeId) => {
+    if (!youtubeId) return;
+    const url = `https://www.youtube.com/channel/${youtubeId}`;
+    window.open(url, "_blank", "noopener");
+  };
+
   return (
     <div className="card">
       <div className="flex-between card-header">
@@ -511,8 +664,10 @@ function ChannelsTable({
             <th>Network</th>
             <th>Team</th>
             <th>Manager</th>
+            <th className="ta-right">Subs</th>
             <th className="ta-right">Views</th>
             <th className="ta-right">Revenue</th>
+            <th className="ta-right">US Rev</th>
             <th className="ta-right">RPM</th>
             {isAdmin && <th></th>}
           </tr>
@@ -520,9 +675,25 @@ function ChannelsTable({
         <tbody>
           {filtered.map((ch) => {
             const rowId = ch.channel_id || ch.id;
+            const rpmVal = Number(ch.rpm ?? 0);
+            const subs = ch.subscribers || 0;
             return (
               <tr key={rowId}>
-                <td>{ch.name}</td>
+                <td>
+                  <div
+                    className="channel-cell"
+                    onClick={() => openChannel(ch.youtube_channel_id)}
+                    style={{ cursor: ch.youtube_channel_id ? "pointer" : "default" }}
+                  >
+                    <ChannelAvatar name={ch.name} avatar_url={ch.avatar_url} />
+                    <div className="channel-meta">
+                      <div className="channel-name">{ch.name}</div>
+                      <div className="channel-subs">
+                        {subs ? `${formatNumber(subs)} subs` : "—"}
+                      </div>
+                    </div>
+                  </div>
+                </td>
                 <td>{ch.youtube_channel_id}</td>
                 <td>
                   {isAdmin && networkOptions.length ? (
@@ -581,9 +752,15 @@ function ChannelsTable({
                     ch.manager_name || "-"
                   )}
                 </td>
+                <td className="ta-right">
+                  {subs ? formatNumber(subs) : "—"}
+                </td>
                 <td className="ta-right">{formatNumber(ch.views)}</td>
-                <td className="ta-right">{formatNumber(ch.revenue)}</td>
-                <td className="ta-right">{Number(ch.rpm || 0).toFixed(2)}</td>
+                <td className="ta-right">{formatCurrency(ch.revenue)}</td>
+                <td className="ta-right">
+                  {formatCurrency(ch.us_revenue ?? ch.revenue)}
+                </td>
+                <td className="ta-right">{rpmVal.toFixed(2)}</td>
                 {isAdmin && (
                   <td className="ta-right">
                     <button
@@ -599,7 +776,7 @@ function ChannelsTable({
           })}
           {!filtered.length && (
             <tr>
-              <td colSpan={isAdmin ? 9 : 8} style={{ textAlign: "center", padding: 16 }}>
+              <td colSpan={isAdmin ? 11 : 10} style={{ textAlign: "center", padding: 16 }}>
                 Chưa có kênh nào.
               </td>
             </tr>
@@ -612,13 +789,18 @@ function ChannelsTable({
 
 /* ---------- staff / teams / networks / projects tabs ---------- */
 
-function StaffTab({ staff, isAdmin, reloadMaster }) {
+function StaffTab({ staff, isAdmin, reloadMaster, channels }) {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState("viewer");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
+
+  const [assignStaffId, setAssignStaffId] = useState("");
+  const [assignChannelId, setAssignChannelId] = useState("");
+  const [assignRole, setAssignRole] = useState("manager");
+  const [assignLoading, setAssignLoading] = useState(false);
 
   const createStaff = async () => {
     if (!email || !password) return;
@@ -648,6 +830,26 @@ function StaffTab({ staff, isAdmin, reloadMaster }) {
       await reloadMaster();
     } catch (e) {
       alert("Lỗi xóa nhân sự: " + e.message);
+    }
+  };
+
+  const assignChannel = async () => {
+    if (!assignStaffId || !assignChannelId) return;
+    setAssignLoading(true);
+    try {
+      await api("/channels/assign", {
+        method: "POST",
+        body: JSON.stringify({
+          staff_id: Number(assignStaffId),
+          channel_id: Number(assignChannelId),
+          role: assignRole
+        })
+      });
+      alert("Gán kênh cho nhân sự thành công!");
+    } catch (e) {
+      alert("Lỗi gán kênh: " + e.message);
+    } finally {
+      setAssignLoading(false);
     }
   };
 
@@ -688,6 +890,48 @@ function StaffTab({ staff, isAdmin, reloadMaster }) {
         </div>
       )}
 
+      {isAdmin && (
+        <div className="card">
+          <div className="card-title">Gán kênh cho nhân sự</div>
+          <div className="form-grid mg-top-8">
+            <select
+              value={assignStaffId}
+              onChange={(e) => setAssignStaffId(e.target.value)}
+            >
+              <option value="">Chọn nhân sự...</option>
+              {staff.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name} ({s.email})
+                </option>
+              ))}
+            </select>
+            <select
+              value={assignChannelId}
+              onChange={(e) => setAssignChannelId(e.target.value)}
+            >
+              <option value="">Chọn kênh...</option>
+              {channels.map((c) => (
+                <option key={c.channel_id || c.id} value={c.channel_id || c.id}>
+                  {c.name} ({c.youtube_channel_id})
+                </option>
+              ))}
+            </select>
+            <select
+              value={assignRole}
+              onChange={(e) => setAssignRole(e.target.value)}
+            >
+              <option value="manager">manager</option>
+              <option value="editor">editor</option>
+            </select>
+            <div className="btn-row">
+              <button disabled={assignLoading} onClick={assignChannel}>
+                Gán kênh
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="card">
         <div className="flex-between card-header">
           <div className="card-title">Danh sách nhân sự</div>
@@ -722,7 +966,10 @@ function StaffTab({ staff, isAdmin, reloadMaster }) {
             ))}
             {!staff.length && (
               <tr>
-                <td colSpan={isAdmin ? 4 : 3} style={{ textAlign: "center", padding: 12 }}>
+                <td
+                  colSpan={isAdmin ? 4 : 3}
+                  style={{ textAlign: "center", padding: 12 }}
+                >
                   Chưa có nhân sự nào.
                 </td>
               </tr>
@@ -734,27 +981,48 @@ function StaffTab({ staff, isAdmin, reloadMaster }) {
   );
 }
 
-function TeamsTab({ teams, reloadMaster }) {
+function TeamsTab({ teams, reloadMaster, isAdmin }) {
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
+  const [editing, setEditing] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  const create = async () => {
+  const save = async () => {
     if (!name) return;
     setLoading(true);
     try {
-      await api("/teams", {
-        method: "POST",
-        body: JSON.stringify({ name, description: desc })
-      });
+      if (editing) {
+        await api(`/teams/${editing.id}`, {
+          method: "PUT",
+          body: JSON.stringify({ name, description: desc })
+        });
+      } else {
+        await api("/teams", {
+          method: "POST",
+          body: JSON.stringify({ name, description: desc })
+        });
+      }
       setName("");
       setDesc("");
+      setEditing(null);
       await reloadMaster();
     } catch (e) {
-      alert("Lỗi tạo team: " + e.message);
+      alert("Lỗi lưu team: " + e.message);
     } finally {
       setLoading(false);
     }
+  };
+
+  const startEdit = (t) => {
+    setEditing(t);
+    setName(t.name);
+    setDesc(t.description || "");
+  };
+
+  const cancelEdit = () => {
+    setEditing(null);
+    setName("");
+    setDesc("");
   };
 
   const del = async (t) => {
@@ -769,26 +1037,35 @@ function TeamsTab({ teams, reloadMaster }) {
 
   return (
     <>
-      <div className="card">
-        <div className="card-title">Thêm Team</div>
-        <div className="form-grid mg-top-8">
-          <input
-            placeholder="Tên team"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-          <input
-            placeholder="Mô tả"
-            value={desc}
-            onChange={(e) => setDesc(e.target.value)}
-          />
-          <div className="btn-row">
-            <button disabled={loading} onClick={create}>
-              Thêm team
-            </button>
+      {isAdmin && (
+        <div className="card">
+          <div className="card-title">
+            {editing ? `Sửa Team: ${editing.name}` : "Thêm Team"}
+          </div>
+          <div className="form-grid mg-top-8">
+            <input
+              placeholder="Tên team"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+            <input
+              placeholder="Mô tả"
+              value={desc}
+              onChange={(e) => setDesc(e.target.value)}
+            />
+            <div className="btn-row">
+              <button disabled={loading} onClick={save}>
+                {editing ? "Lưu" : "Thêm team"}
+              </button>
+              {editing && (
+                <button className="secondary" onClick={cancelEdit}>
+                  Hủy
+                </button>
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       <div className="card">
         <div className="flex-between card-header">
@@ -800,7 +1077,7 @@ function TeamsTab({ teams, reloadMaster }) {
             <tr>
               <th>Tên team</th>
               <th>Mô tả</th>
-              <th></th>
+              {isAdmin && <th></th>}
             </tr>
           </thead>
           <tbody>
@@ -808,16 +1085,21 @@ function TeamsTab({ teams, reloadMaster }) {
               <tr key={t.id}>
                 <td>{t.name}</td>
                 <td>{t.description}</td>
-                <td className="ta-right">
-                  <button className="danger small" onClick={() => del(t)}>
-                    Xóa
-                  </button>
-                </td>
+                {isAdmin && (
+                  <td className="ta-right">
+                    <button className="small" onClick={() => startEdit(t)}>
+                      Sửa
+                    </button>
+                    <button className="danger small" onClick={() => del(t)}>
+                      Xóa
+                    </button>
+                  </td>
+                )}
               </tr>
             ))}
             {!teams.length && (
               <tr>
-                <td colSpan={3} style={{ textAlign: "center", padding: 12 }}>
+                <td colSpan={isAdmin ? 3 : 2} style={{ textAlign: "center", padding: 12 }}>
                   Chưa có team nào.
                 </td>
               </tr>
@@ -829,27 +1111,48 @@ function TeamsTab({ teams, reloadMaster }) {
   );
 }
 
-function NetworksTab({ networks, reloadMaster }) {
+function NetworksTab({ networks, reloadMaster, isAdmin }) {
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
+  const [editing, setEditing] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  const create = async () => {
+  const save = async () => {
     if (!name) return;
     setLoading(true);
     try {
-      await api("/networks", {
-        method: "POST",
-        body: JSON.stringify({ name, description: desc })
-      });
+      if (editing) {
+        await api(`/networks/${editing.id}`, {
+          method: "PUT",
+          body: JSON.stringify({ name, description: desc })
+        });
+      } else {
+        await api("/networks", {
+          method: "POST",
+          body: JSON.stringify({ name, description: desc })
+        });
+      }
       setName("");
       setDesc("");
+      setEditing(null);
       await reloadMaster();
     } catch (e) {
-      alert("Lỗi tạo network: " + e.message);
+      alert("Lỗi lưu network: " + e.message);
     } finally {
       setLoading(false);
     }
+  };
+
+  const startEdit = (n) => {
+    setEditing(n);
+    setName(n.name);
+    setDesc(n.description || "");
+  };
+
+  const cancelEdit = () => {
+    setEditing(null);
+    setName("");
+    setDesc("");
   };
 
   const del = async (n) => {
@@ -864,26 +1167,35 @@ function NetworksTab({ networks, reloadMaster }) {
 
   return (
     <>
-      <div className="card">
-        <div className="card-title">Thêm Network</div>
-        <div className="form-grid mg-top-8">
-          <input
-            placeholder="Tên network"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-          <input
-            placeholder="Mô tả"
-            value={desc}
-            onChange={(e) => setDesc(e.target.value)}
-          />
-          <div className="btn-row">
-            <button disabled={loading} onClick={create}>
-              Thêm network
-            </button>
+      {isAdmin && (
+        <div className="card">
+          <div className="card-title">
+            {editing ? `Sửa Network: ${editing.name}` : "Thêm Network"}
+          </div>
+          <div className="form-grid mg-top-8">
+            <input
+              placeholder="Tên network"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+            <input
+              placeholder="Mô tả"
+              value={desc}
+              onChange={(e) => setDesc(e.target.value)}
+            />
+            <div className="btn-row">
+              <button disabled={loading} onClick={save}>
+                {editing ? "Lưu" : "Thêm network"}
+              </button>
+              {editing && (
+                <button className="secondary" onClick={cancelEdit}>
+                  Hủy
+                </button>
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       <div className="card">
         <div className="flex-between card-header">
@@ -895,7 +1207,7 @@ function NetworksTab({ networks, reloadMaster }) {
             <tr>
               <th>Tên</th>
               <th>Mô tả</th>
-              <th></th>
+              {isAdmin && <th></th>}
             </tr>
           </thead>
           <tbody>
@@ -903,16 +1215,21 @@ function NetworksTab({ networks, reloadMaster }) {
               <tr key={n.id}>
                 <td>{n.name}</td>
                 <td>{n.description}</td>
-                <td className="ta-right">
-                  <button className="danger small" onClick={() => del(n)}>
-                    Xóa
-                  </button>
-                </td>
+                {isAdmin && (
+                  <td className="ta-right">
+                    <button className="small" onClick={() => startEdit(n)}>
+                      Sửa
+                    </button>
+                    <button className="danger small" onClick={() => del(n)}>
+                      Xóa
+                    </button>
+                  </td>
+                )}
               </tr>
             ))}
             {!networks.length && (
               <tr>
-                <td colSpan={3} style={{ textAlign: "center", padding: 12 }}>
+                <td colSpan={isAdmin ? 3 : 2} style={{ textAlign: "center", padding: 12 }}>
                   Chưa có network nào.
                 </td>
               </tr>
@@ -924,36 +1241,66 @@ function NetworksTab({ networks, reloadMaster }) {
   );
 }
 
-function ProjectsTab({ projects, reloadMaster }) {
+function ProjectsTab({ projects, reloadMaster, isAdmin }) {
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+  const [editing, setEditing] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  const create = async () => {
+  const save = async () => {
     if (!name) return;
     setLoading(true);
     try {
-      await api("/projects", {
-        method: "POST",
-        body: JSON.stringify({
-          name,
-          description: desc,
-          start_date: startDate || null,
-          end_date: endDate || null
-        })
-      });
+      if (editing) {
+        await api(`/projects/${editing.id}`, {
+          method: "PUT",
+          body: JSON.stringify({
+            name,
+            description: desc,
+            start_date: startDate || null,
+            end_date: endDate || null
+          })
+        });
+      } else {
+        await api("/projects", {
+          method: "POST",
+          body: JSON.stringify({
+            name,
+            description: desc,
+            start_date: startDate || null,
+            end_date: endDate || null
+          })
+        });
+      }
       setName("");
       setDesc("");
       setStartDate("");
       setEndDate("");
+      setEditing(null);
       await reloadMaster();
     } catch (e) {
-      alert("Lỗi tạo dự án: " + e.message);
+      alert("Lỗi lưu dự án: " + e.message);
     } finally {
       setLoading(false);
     }
+  };
+
+  const startEdit = (p) => {
+    setEditing(p);
+    setName(p.name);
+    setDesc(p.description || "");
+    setStartDate(p.start_date || "");
+    setEndDate(p.end_date || "");
+  };
+
+  const cancelEdit = () => {
+    setEditing(null);
+    setName("");
+    setDesc("");
+    setStartDate("");
+    setEndDate("");
   };
 
   const del = async (p) => {
@@ -968,38 +1315,47 @@ function ProjectsTab({ projects, reloadMaster }) {
 
   return (
     <>
-      <div className="card">
-        <div className="card-title">Thêm Dự án</div>
-        <div className="form-grid mg-top-8">
-          <input
-            placeholder="Tên dự án"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-          <input
-            placeholder="Mô tả"
-            value={desc}
-            onChange={(e) => setDesc(e.target.value)}
-          />
-          <div className="flex gap-8">
-            <input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-            />
-            <input
-              type="date"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-            />
+      {isAdmin && (
+        <div className="card">
+          <div className="card-title">
+            {editing ? `Sửa Dự án: ${editing.name}` : "Thêm Dự án"}
           </div>
-          <div className="btn-row">
-            <button disabled={loading} onClick={create}>
-              Thêm dự án
-            </button>
+          <div className="form-grid mg-top-8">
+            <input
+              placeholder="Tên dự án"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+            <input
+              placeholder="Mô tả"
+              value={desc}
+              onChange={(e) => setDesc(e.target.value)}
+            />
+            <div className="flex gap-8">
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+              />
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+              />
+            </div>
+            <div className="btn-row">
+              <button disabled={loading} onClick={save}>
+                {editing ? "Lưu" : "Thêm dự án"}
+              </button>
+              {editing && (
+                <button className="secondary" onClick={cancelEdit}>
+                  Hủy
+                </button>
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       <div className="card">
         <div className="flex-between card-header">
@@ -1013,7 +1369,7 @@ function ProjectsTab({ projects, reloadMaster }) {
               <th>Mô tả</th>
               <th>Bắt đầu</th>
               <th>Kết thúc</th>
-              <th></th>
+              {isAdmin && <th></th>}
             </tr>
           </thead>
           <tbody>
@@ -1023,16 +1379,21 @@ function ProjectsTab({ projects, reloadMaster }) {
                 <td>{p.description}</td>
                 <td>{p.start_date}</td>
                 <td>{p.end_date}</td>
-                <td className="ta-right">
-                  <button className="danger small" onClick={() => del(p)}>
-                    Xóa
-                  </button>
-                </td>
+                {isAdmin && (
+                  <td className="ta-right">
+                    <button className="small" onClick={() => startEdit(p)}>
+                      Sửa
+                    </button>
+                    <button className="danger small" onClick={() => del(p)}>
+                      Xóa
+                    </button>
+                  </td>
+                )}
               </tr>
             ))}
             {!projects.length && (
               <tr>
-                <td colSpan={5} style={{ textAlign: "center", padding: 12 }}>
+                <td colSpan={isAdmin ? 5 : 4} style={{ textAlign: "center", padding: 12 }}>
                   Chưa có dự án nào.
                 </td>
               </tr>
@@ -1050,7 +1411,6 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [tab, setTab] = useState("dashboard");
 
-  // default date range = 30 ngày gần nhất
   const today = new Date();
   const defaultTo = today.toISOString().slice(0, 10);
   const defaultFrom = new Date(today.getTime() - 30 * 86400000)
@@ -1064,6 +1424,8 @@ export default function App() {
   const [filterNetworkId, setFilterNetworkId] = useState("");
   const [filterManagerId, setFilterManagerId] = useState("");
 
+  const filters = { teamId: filterTeamId, networkId: filterNetworkId, managerId: filterManagerId };
+
   const {
     summary,
     channels,
@@ -1073,11 +1435,7 @@ export default function App() {
     loading: dashboardLoading,
     error: dashboardError,
     reload: reloadDashboard
-  } = useDashboardData(from, to, {
-    teamId: filterTeamId,
-    networkId: filterNetworkId,
-    managerId: filterManagerId
-  });
+  } = useDashboardData(from, to, filters);
 
   const [staff, setStaff] = useState([]);
   const [teams, setTeams] = useState([]);
@@ -1117,6 +1475,7 @@ export default function App() {
         // ignore
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleLogout = () => {
@@ -1169,6 +1528,8 @@ export default function App() {
     );
   }
 
+  const isAdmin = user.role === "admin";
+
   return (
     <div className="app-container">
       <TopBar
@@ -1210,34 +1571,37 @@ export default function App() {
           title="Quản lý Kênh"
           channels={channels}
           showConnectButton={true}
-          isAdmin={user.role === "admin"}
+          isAdmin={isAdmin}
           staffOptions={staff}
           teamOptions={teams}
           networkOptions={networks}
-          onUpdateChannelMeta={
-            user.role === "admin" ? handleUpdateChannelMeta : undefined
-          }
-          onDelete={user.role === "admin" ? handleDeleteChannel : undefined}
+          onUpdateChannelMeta={isAdmin ? handleUpdateChannelMeta : undefined}
+          onDelete={isAdmin ? handleDeleteChannel : undefined}
         />
       )}
 
       {tab === "staff" && (
-  <StaffTab
-    staff={staff}
-    isAdmin={user.role === "admin"}
-    reloadMaster={() => loadMasterData(user)}
-    channels={channels}   // nhớ truyền channels xuống để gán kênh
-  />
-)}
+        <StaffTab
+          staff={staff}
+          isAdmin={isAdmin}
+          reloadMaster={() => loadMasterData(user)}
+          channels={channels}
+        />
+      )}
 
       {tab === "teams" && (
-        <TeamsTab teams={teams} reloadMaster={() => loadMasterData(user)} />
+        <TeamsTab
+          teams={teams}
+          reloadMaster={() => loadMasterData(user)}
+          isAdmin={isAdmin}
+        />
       )}
 
       {tab === "networks" && (
         <NetworksTab
           networks={networks}
           reloadMaster={() => loadMasterData(user)}
+          isAdmin={isAdmin}
         />
       )}
 
@@ -1245,6 +1609,7 @@ export default function App() {
         <ProjectsTab
           projects={projects}
           reloadMaster={() => loadMasterData(user)}
+          isAdmin={isAdmin}
         />
       )}
     </div>
