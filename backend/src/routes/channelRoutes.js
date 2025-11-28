@@ -1,3 +1,4 @@
+// backend/src/routes/channelRoutes.js
 import express from "express";
 import { pool } from "../db.js";
 import { authMiddleware, requireRole } from "../auth.js";
@@ -29,9 +30,20 @@ router.get("/", authMiddleware, async (req, res) => {
     const user = req.user;
     const channelIds = await getVisibleChannelIds(user);
     if (channelIds.length === 0) return res.json([]);
+
     const result = await pool.query(
       `
-      SELECT c.*, n.name AS network_name, t.name AS team_name, m.name AS manager_name
+      SELECT
+        c.id,
+        c.name,
+        c.youtube_channel_id,
+        c.network_id,
+        c.team_id,
+        c.manager_id,
+        c.status,
+        n.name AS network_name,
+        t.name AS team_name,
+        m.name AS manager_name
       FROM channels c
       LEFT JOIN networks n ON c.network_id = n.id
       LEFT JOIN teams t ON c.team_id = t.id
@@ -73,7 +85,52 @@ router.post("/", authMiddleware, requireRole("admin"), async (req, res) => {
   }
 });
 
-// Assign channel to staff (admin)
+// Update channel (Team / Network / Manager / Status / Name)
+router.put("/:id", authMiddleware, requireRole("admin"), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const {
+      name,
+      network_id,
+      team_id,
+      manager_id,
+      status
+    } = req.body;
+
+    const result = await pool.query(
+      `
+      UPDATE channels
+      SET
+        name = COALESCE($1, name),
+        network_id = $2,
+        team_id = $3,
+        manager_id = $4,
+        status = COALESCE($5, status)
+      WHERE id = $6
+      RETURNING *;
+      `,
+      [
+        name || null,
+        network_id || null,
+        team_id || null,
+        manager_id || null,
+        status || null,
+        id
+      ]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: "Channel not found" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Update channel error:", err);
+    res.status(500).json({ error: "DB error" });
+  }
+});
+
+// Assign channel to staff (admin) – mapping phụ (ngoài manager_id)
 router.post("/assign", authMiddleware, requireRole("admin"), async (req, res) => {
   try {
     const { staff_id, channel_id, role } = req.body;
