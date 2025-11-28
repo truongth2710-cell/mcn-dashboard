@@ -5,15 +5,10 @@ import { authMiddleware } from "../auth.js";
 const router = express.Router();
 
 /**
- * Helper build WHERE clause for filters.
- * Chỉ dùng các bảng chắc chắn có:
- *  - yt_daily_revenue d (date, views, estimated_revenue, channel_id)
- *  - channels c (youtube_channel_id, team_id, network_id)
- *  - teams t
- *  - networks n
- *  - projects p (channel_id TEXT)
+ * Helper: build WHERE & params based on filters.
+ * Filters apply to channel_metrics_daily + channels.
  */
-function buildFilter({ from, to, teamId, networkId }) {
+function buildFilter({ from, to, teamId, networkId, managerId }) {
   const params = [];
   const wh = [];
 
@@ -33,41 +28,60 @@ function buildFilter({ from, to, teamId, networkId }) {
     params.push(networkId);
     wh.push(`c.network_id = $${params.length}`);
   }
+  if (managerId) {
+    params.push(managerId);
+    wh.push(`
+      EXISTS (
+        SELECT 1 FROM staff_channels scm
+        WHERE scm.channel_id = c.id
+        AND scm.role = 'manager'
+        AND scm.staff_id = $${params.length}
+      )
+    `);
+  }
 
   const where = wh.length ? "WHERE " + wh.join(" AND ") : "";
   return { where, params };
 }
 
 /**
- * Summary tổng quan: views, revenue, rpm.
+ * GET /api/dashboard/summary
+ * Tổng views, doanh thu, doanh thu Hoa Kỳ (tạm = revenue), RPM trung bình.
  */
 router.get("/summary", authMiddleware, async (req, res) => {
   try {
-    const { from, to, teamId, networkId } = req.query;
-    const { where, params } = buildFilter({ from, to, teamId, networkId });
+    const { from, to, teamId, networkId, managerId } = req.query;
+    const { where, params } = buildFilter({
+      from,
+      to,
+      teamId,
+      networkId,
+      managerId
+    });
 
     const sql = `
       SELECT
-        COALESCE(SUM(d.views), 0)                AS "totalViews",
-        COALESCE(SUM(d.estimated_revenue), 0)    AS "totalRevenue",
-        0::numeric                               AS "totalUsRevenue",
+        COALESCE(SUM(d.views), 0)               AS "totalViews",
+        COALESCE(SUM(d.revenue), 0)             AS "totalRevenue",
+        -- Hiện chưa có us_revenue, tạm coi như toàn bộ revenue
+        COALESCE(SUM(d.revenue), 0)             AS "totalUsRevenue",
         CASE
           WHEN COALESCE(SUM(d.views), 0) > 0
-          THEN SUM(d.estimated_revenue) / (SUM(d.views) / 1000.0)
+          THEN SUM(d.revenue) / (SUM(d.views) / 1000.0)
           ELSE 0
-        END                                      AS "avgRPM"
-      FROM yt_daily_revenue d
-      LEFT JOIN channels c
-        ON c.youtube_channel_id = d.channel_id
+        END                                     AS "avgRPM"
+      FROM channel_metrics_daily d
+      JOIN channels c ON c.id = d.channel_id
       ${where};
     `;
+
     const result = await pool.query(sql, params);
     res.json(
       result.rows[0] || {
         totalViews: 0,
         totalRevenue: 0,
         totalUsRevenue: 0,
-        avgRPM: 0,
+        avgRPM: 0
       }
     );
   } catch (err) {
@@ -77,47 +91,57 @@ router.get("/summary", authMiddleware, async (req, res) => {
 });
 
 /**
- * Danh sách kênh + metrics tổng.
+ * GET /api/dashboard/channels
+ * Danh sách kênh + tổng views / revenue / rpm trong khoảng filter.
  */
 router.get("/channels", authMiddleware, async (req, res) => {
   try {
-    const { from, to, teamId, networkId } = req.query;
-    const { where, params } = buildFilter({ from, to, teamId, networkId });
+    const { from, to, teamId, networkId, managerId } = req.query;
+    const { where, params } = buildFilter({
+      from,
+      to,
+      teamId,
+      networkId,
+      managerId
+    });
 
     const sql = `
       SELECT
-        COALESCE(c.id, 0)                       AS id,
-        COALESCE(c.name, d.channel_id)          AS name,
-        COALESCE(c.youtube_channel_id, d.channel_id) AS youtube_channel_id,
+        c.id,
+        c.name,
+        c.youtube_channel_id,
         c.network_id,
         c.team_id,
-        n.name                                  AS network_name,
-        t.name                                  AS team_name,
-        COALESCE(SUM(d.views), 0)              AS views,
-        COALESCE(SUM(d.estimated_revenue), 0)  AS revenue,
-        0::numeric                              AS us_revenue,
+        n.name AS network_name,
+        t.name AS team_name,
+        m.id   AS manager_id,
+        m.name AS manager_name,
+        COALESCE(SUM(d.views), 0)      AS views,
+        COALESCE(SUM(d.revenue), 0)    AS revenue,
+        -- us_revenue hiện chưa có, tạm = revenue
+        COALESCE(SUM(d.revenue), 0)    AS us_revenue,
         CASE
           WHEN COALESCE(SUM(d.views), 0) > 0
-          THEN SUM(d.estimated_revenue) / (SUM(d.views) / 1000.0)
+          THEN SUM(d.revenue) / (SUM(d.views) / 1000.0)
           ELSE 0
-        END                                    AS rpm,
-        NULL                                    AS subscribers,
-        COALESCE(c.avatar_url, NULL)           AS avatar_url
-      FROM yt_daily_revenue d
-      LEFT JOIN channels c
-        ON c.youtube_channel_id = d.channel_id
+        END                            AS rpm,
+        -- Hiện chưa lưu subscribers / avatar trong metrics
+        0                               AS subscribers,
+        NULL::TEXT                      AS avatar_url
+      FROM channels c
+      LEFT JOIN channel_metrics_daily d ON d.channel_id = c.id
       LEFT JOIN networks n ON n.id = c.network_id
       LEFT JOIN teams t    ON t.id = c.team_id
+      LEFT JOIN staff_channels scm
+        ON scm.channel_id = c.id AND scm.role = 'manager'
+      LEFT JOIN staff_users m
+        ON m.id = scm.staff_id
       ${where}
       GROUP BY
-        COALESCE(c.id, 0),
-        COALESCE(c.name, d.channel_id),
-        COALESCE(c.youtube_channel_id, d.channel_id),
-        c.network_id,
-        c.team_id,
-        n.name,
-        t.name,
-        c.avatar_url
+        c.id, c.name, c.youtube_channel_id,
+        c.network_id, c.team_id,
+        n.name, t.name,
+        m.id, m.name
       ORDER BY revenue DESC NULLS LAST;
     `;
     const result = await pool.query(sql, params);
@@ -129,23 +153,28 @@ router.get("/channels", authMiddleware, async (req, res) => {
 });
 
 /**
+ * GET /api/dashboard/team-summary
  * Tổng hợp theo team.
  */
 router.get("/team-summary", authMiddleware, async (req, res) => {
   try {
-    const { from, to, networkId } = req.query;
-    const { where, params } = buildFilter({ from, to, teamId: null, networkId });
+    const { from, to, networkId, managerId } = req.query;
+    const { where, params } = buildFilter({
+      from,
+      to,
+      networkId,
+      managerId
+    });
 
     const sql = `
       SELECT
         t.id,
         t.name AS team_name,
-        COALESCE(SUM(d.views), 0)             AS views,
-        COALESCE(SUM(d.estimated_revenue), 0) AS revenue
+        COALESCE(SUM(d.views), 0)      AS views,
+        COALESCE(SUM(d.revenue), 0)    AS revenue
       FROM teams t
       JOIN channels c ON c.team_id = t.id
-      LEFT JOIN yt_daily_revenue d
-        ON d.channel_id = c.youtube_channel_id
+      LEFT JOIN channel_metrics_daily d ON d.channel_id = c.id
       ${where}
       GROUP BY t.id, t.name
       ORDER BY revenue DESC NULLS LAST;
@@ -159,23 +188,28 @@ router.get("/team-summary", authMiddleware, async (req, res) => {
 });
 
 /**
+ * GET /api/dashboard/network-summary
  * Tổng hợp theo network.
  */
 router.get("/network-summary", authMiddleware, async (req, res) => {
   try {
-    const { from, to, teamId } = req.query;
-    const { where, params } = buildFilter({ from, to, teamId, networkId: null });
+    const { from, to, teamId, managerId } = req.query;
+    const { where, params } = buildFilter({
+      from,
+      to,
+      teamId,
+      managerId
+    });
 
     const sql = `
       SELECT
         n.id,
         n.name AS network_name,
-        COALESCE(SUM(d.views), 0)             AS views,
-        COALESCE(SUM(d.estimated_revenue), 0) AS revenue
+        COALESCE(SUM(d.views), 0)      AS views,
+        COALESCE(SUM(d.revenue), 0)    AS revenue
       FROM networks n
       JOIN channels c ON c.network_id = n.id
-      LEFT JOIN yt_daily_revenue d
-        ON d.channel_id = c.youtube_channel_id
+      LEFT JOIN channel_metrics_daily d ON d.channel_id = c.id
       ${where}
       GROUP BY n.id, n.name
       ORDER BY revenue DESC NULLS LAST;
@@ -189,35 +223,25 @@ router.get("/network-summary", authMiddleware, async (req, res) => {
 });
 
 /**
+ * GET /api/dashboard/project-summary
  * Tổng hợp theo project.
- * Dùng bảng projects(channel_id TEXT, ...) + yt_daily_revenue.
+ * Dùng bảng project_channels (đúng với migration).
  */
 router.get("/project-summary", authMiddleware, async (req, res) => {
   try {
     const { from, to } = req.query;
-    const params = [];
-    const wh = [];
-
-    if (from) {
-      params.push(from);
-      wh.push(`d.date >= $${params.length}`);
-    }
-    if (to) {
-      params.push(to);
-      wh.push(`d.date <= $${params.length}`);
-    }
-
-    const where = wh.length ? "WHERE " + wh.join(" AND ") : "";
+    const { where, params } = buildFilter({ from, to });
 
     const sql = `
       SELECT
         p.id,
         p.name AS project_name,
-        COALESCE(SUM(d.views), 0)             AS views,
-        COALESCE(SUM(d.estimated_revenue), 0) AS revenue
+        COALESCE(SUM(d.views), 0)      AS views,
+        COALESCE(SUM(d.revenue), 0)    AS revenue
       FROM projects p
-      LEFT JOIN yt_daily_revenue d
-        ON d.channel_id = p.channel_id
+      JOIN project_channels pc ON pc.project_id = p.id
+      JOIN channels c ON c.id = pc.channel_id
+      LEFT JOIN channel_metrics_daily d ON d.channel_id = c.id
       ${where}
       GROUP BY p.id, p.name
       ORDER BY revenue DESC NULLS LAST;
@@ -231,24 +255,30 @@ router.get("/project-summary", authMiddleware, async (req, res) => {
 });
 
 /**
- * Timeseries doanh thu kênh – cho biểu đồ.
+ * GET /api/dashboard/channel-timeseries
+ * Timeseries doanh thu kênh – phục vụ biểu đồ.
  */
 router.get("/channel-timeseries", authMiddleware, async (req, res) => {
   try {
-    const { from, to, teamId, networkId } = req.query;
-    const { where, params } = buildFilter({ from, to, teamId, networkId });
+    const { from, to, teamId, networkId, managerId } = req.query;
+    const { where, params } = buildFilter({
+      from,
+      to,
+      teamId,
+      networkId,
+      managerId
+    });
 
     const sql = `
       SELECT
         d.date,
-        COALESCE(c.id, 0)                      AS channel_id,
-        COALESCE(c.name, d.channel_id)         AS channel_name,
-        COALESCE(SUM(d.estimated_revenue), 0)  AS revenue
-      FROM yt_daily_revenue d
-      LEFT JOIN channels c
-        ON c.youtube_channel_id = d.channel_id
+        c.id          AS channel_id,
+        c.name        AS channel_name,
+        COALESCE(SUM(d.revenue), 0) AS revenue
+      FROM channel_metrics_daily d
+      JOIN channels c ON c.id = d.channel_id
       ${where}
-      GROUP BY d.date, COALESCE(c.id, 0), COALESCE(c.name, d.channel_id)
+      GROUP BY d.date, c.id, c.name
       ORDER BY d.date ASC, revenue DESC;
     `;
     const result = await pool.query(sql, params);
