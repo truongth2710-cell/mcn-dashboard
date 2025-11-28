@@ -1222,12 +1222,13 @@ export default function App() {
       )}
 
       {tab === "staff" && (
-        <StaffTab
-          staff={staff}
-          isAdmin={user.role === "admin"}
-          reloadMaster={() => loadMasterData(user)}
-        />
-      )}
+  <StaffTab
+    staff={staff}
+    isAdmin={user.role === "admin"}
+    reloadMaster={() => loadMasterData(user)}
+    channels={channels}   // nhớ truyền channels xuống để gán kênh
+  />
+)}
 
       {tab === "teams" && (
         <TeamsTab teams={teams} reloadMaster={() => loadMasterData(user)} />
