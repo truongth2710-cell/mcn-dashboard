@@ -64,7 +64,7 @@ function getDateRangeFromEnv() {
 async function fetchRangeForChannel(channelId, startDate, endDate, client) {
   const ytAnalytics = google.youtubeAnalytics("v2");
 
-  async function query(metrics) {
+  async function query(metrics, extra = {}) {
     const { data } = await ytAnalytics.reports.query({
       auth: client,
       ids: `channel==${channelId}`,
@@ -72,17 +72,17 @@ async function fetchRangeForChannel(channelId, startDate, endDate, client) {
       endDate,
       metrics,
       dimensions: "day",
-      sort: "day"
+      sort: "day",
+      ...extra
     });
     return data;
   }
 
   try {
-    // thử lấy đầy đủ metrics
+    // Lần 1: lấy views, watch time, revenue tổng, subs
     const data = await query(
       "views,estimatedMinutesWatched,estimatedRevenue,subscribersGained,subscribersLost"
     );
-
     const headers = data.columnHeaders || [];
     const dayIdx = headers.findIndex((h) => h.name === "day");
     const viewsIdx = headers.findIndex((h) => h.name === "views");
@@ -93,14 +93,42 @@ async function fetchRangeForChannel(channelId, startDate, endDate, client) {
     const sgIdx = headers.findIndex((h) => h.name === "subscribersGained");
     const slIdx = headers.findIndex((h) => h.name === "subscribersLost");
 
-    const rows = (data.rows || []).map((r) => [
-      r[dayIdx],
-      Number(r[viewsIdx] || 0),
-      Number(r[wtIdx] || 0),
-      Number(r[revIdx] || 0),
-      Number(r[sgIdx] || 0),
-      Number(r[slIdx] || 0)
-    ]);
+    // Lần 2: lấy riêng doanh thu Hoa Kỳ (country==US)
+    const usMap = new Map();
+    try {
+      const usData = await query("estimatedRevenue", { filters: "country==US" });
+      const usHeaders = usData.columnHeaders || [];
+      const usDayIdx = usHeaders.findIndex((h) => h.name === "day");
+      const usRevIdx = usHeaders.findIndex(
+        (h) => h.name === "estimatedRevenue"
+      );
+
+      for (const r of usData.rows || []) {
+        const d = r[usDayIdx];
+        const usRev = Number(r[usRevIdx] || 0);
+        if (d) {
+          usMap.set(d, usRev);
+        }
+      }
+    } catch (errUS) {
+      console.log(
+        "US revenue error (fallback us_revenue = 0):",
+        channelId,
+        errUS?.response?.data?.error?.message || errUS.message || errUS
+      );
+    }
+
+    const rows = (data.rows || []).map((r) => {
+      const day = r[dayIdx];
+      const views = Number(r[viewsIdx] || 0);
+      const wt = Number(r[wtIdx] || 0);
+      const rev = Number(r[revIdx] || 0);
+      const sg = Number(r[sgIdx] || 0);
+      const sl = Number(r[slIdx] || 0);
+      const usRev = usMap.get(day) || 0;
+
+      return [day, views, wt, rev, sg, sl, usRev];
+    });
 
     return rows;
   } catch (e1) {
@@ -133,16 +161,16 @@ async function fetchRangeForChannel(channelId, startDate, endDate, client) {
       r[dayIdx],
       Number(r[viewsIdx] || 0),
       Number(r[wtIdx] || 0),
-      0, // revenue = 0 vì không có quyền
-      0,
-      0
+      0, // revenue
+      0, // subs gained
+      0, // subs lost
+      0 // us_revenue
     ]);
 
     return rows;
   }
 }
 
-/** Lưu nhiều ngày vào bảng channel_metrics_daily (upsert) */
 async function saveRangeToDB(channelTableId, rows) {
   for (const r of rows) {
     const date = r[0]; // "YYYY-MM-DD"
@@ -151,25 +179,26 @@ async function saveRangeToDB(channelTableId, rows) {
     const revenue = Number(r[3] || 0);
     const subsGained = Number(r[4] || 0);
     const subsLost = Number(r[5] || 0);
+    const usRevenue = Number(r[6] || 0);
 
     await pool.query(
       `
       INSERT INTO channel_metrics_daily
-        (channel_id, date, views, watch_time_minutes, revenue, subs_gained, subs_lost)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+        (channel_id, date, views, watch_time_minutes, revenue, us_revenue, subs_gained, subs_lost)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       ON CONFLICT (channel_id, date) DO UPDATE SET
         views = EXCLUDED.views,
         watch_time_minutes = EXCLUDED.watch_time_minutes,
         revenue = EXCLUDED.revenue,
+        us_revenue = EXCLUDED.us_revenue,
         subs_gained = EXCLUDED.subs_gained,
         subs_lost = EXCLUDED.subs_lost;
       `,
-      [channelTableId, date, views, watch, revenue, subsGained, subsLost]
+      [channelTableId, date, views, watch, revenue, usRevenue, subsGained, subsLost]
     );
   }
 }
 
-/** Main backfill */
 async function main() {
   await runMigrations();
 
