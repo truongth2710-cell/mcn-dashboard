@@ -63,8 +63,7 @@ router.get("/summary", authMiddleware, async (req, res) => {
       SELECT
         COALESCE(SUM(d.views), 0)               AS "totalViews",
         COALESCE(SUM(d.revenue), 0)             AS "totalRevenue",
-        -- Hiện chưa có us_revenue, tạm coi như toàn bộ revenue
-        COALESCE(SUM(d.revenue), 0)             AS "totalUsRevenue",
+        COALESCE(SUM(d.us_revenue), 0)          AS "totalUsRevenue",
         CASE
           WHEN COALESCE(SUM(d.views), 0) > 0
           THEN SUM(d.revenue) / (SUM(d.views) / 1000.0)
@@ -118,8 +117,7 @@ router.get("/channels", authMiddleware, async (req, res) => {
         m.name AS manager_name,
         COALESCE(SUM(d.views), 0)      AS views,
         COALESCE(SUM(d.revenue), 0)    AS revenue,
-        -- us_revenue hiện chưa có, tạm = revenue
-        COALESCE(SUM(d.revenue), 0)    AS us_revenue,
+        COALESCE(SUM(d.us_revenue), 0) AS us_revenue,
         CASE
           WHEN COALESCE(SUM(d.views), 0) > 0
           THEN SUM(d.revenue) / (SUM(d.views) / 1000.0)
